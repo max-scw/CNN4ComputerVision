@@ -1,12 +1,13 @@
+from datetime import datetime
+import logging
+import numpy as np
 import pathlib as pl
 import random
-import numpy as np
-import logging
-from datetime import datetime
+import re
 from typing import Union, Tuple
 
 import os
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # MobileNet(s)
@@ -14,7 +15,8 @@ from keras.applications import MobileNet, MobileNetV2, MobileNetV3Small, MobileN
 # ResNet(s)
 from keras.applications import ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 # Inception
-from keras.applications import InceptionV3, InceptionResNetV2, Xception
+from keras.applications import InceptionV3, InceptionResNetV2
+from keras.applications import Xception
 # VGG
 from keras.applications import VGG16, VGG19
 # https://keras.io/api/applications/
@@ -41,8 +43,11 @@ class ExamineModels():
     n_classes = 0
     img_size = None
     color_mode = 'rgb'
-    model = None
     epochs = None
+
+    model_pretrained = False
+    model_name = None
+    model = None
 
     def __init__(self, path_to_data: Union[pl.Path, str], 
                  path_to_save_models: Union[str, pl.Path],
@@ -145,12 +150,65 @@ class ExamineModels():
     def analyze(self, model_name: str, ) -> bool:
         # set model
 
-        self._compile_model()
         # train model
         self.fit()
         # save model
         self._path_to_models
         self.model.save(self._path_to_models.joinpath(f'{model_name}.h5'))
+        return True
+    
+    def _parse_model_name(self, model_name: str) -> bool:
+        # look for architecture
+        if re.match('MobileNet(V?[1-3])?((Small)|(Large))?', model_name, re.IGNORECASE):
+            # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
+            pass
+        else:
+            # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
+            # InceptionV3, InceptionResNetV2
+            # Xception
+            # VGG16, VGG19
+            pass
+
+        # look for 'pretrained' flag
+        if re.search('pretrained', model_name, re.IGNORECASE):
+            self.model_pretrained = True
+        else:
+            self.model_pretrained = False
+        
+        return True
+
+    def __add_new_head(self) -> bool:
+        base_model = self.model
+        model_head = Dense(2, activation='softmax')(base_model.output)
+        self.model = Model(inputs=base_model.input, outputs=model_head)
+        return True
+
+    def set_model(self, model_name: str) -> bool:
+        args = {'classes': self.n_classes}
+        # input shape
+        if re.match('RGB', self.color_mode, re.IGNORECASE):
+            args['input_shape'] = self.img_size + (3,)
+        else:  # color_mode == grayscale
+            args['input_shape'] = self.img_size + (1,)
+        
+        # pretrained weights
+        if self.model_pretrained:
+            args['weights'] = 'ImageNet'
+            args['include_top'] = False
+            args['pooling'] = 'avg'
+        else:
+            args['weights'] = None
+
+
+        self.model = MobileNet(*args)
+        self.model = MobileNetV2(*args)
+        self.model = MobileNetV3Small(*args)
+        self.model = MobileNetV3Large(*args)
+
+        if self.model_pretrained:
+            self.__add_new_head()
+            # compile model
+        self._compile_model()
         return True
 
 
@@ -189,8 +247,7 @@ if __name__ == '__main__':
 
     base_model = MobileNetV2(input_shape=img_size + (3,),
                                  weights='imagenet', include_top=False, pooling='avg')
-    model_head = Dense(2, activation='softmax')(base_model.output)
-    model = Model(inputs=base_model.input, outputs=model_head)
+
     # TODO: add new top layer!
 
     model.save(path_to_save_models.joinpath('MobileNetV2_pretrained.h5'))
