@@ -87,7 +87,7 @@ class TrainModels:
     def set_path_to_data(self, path_to_data: Union[pl.Path, str]) -> bool:
         # TODO: check for correct folder structure!
         self._path_to_data = pl.Path(path_to_data)
-        # self.paths = dict()  # FIXME: initialize as dict?
+
         for el in self.__split_names.items():
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
         # TODO get n_classes
@@ -164,12 +164,14 @@ class TrainModels:
         return True
 
     def fit(self):
+        logging.info(f'{datetime.date.today()}: Start training {self.model_name} ...')
         self.model.fit(
             self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=True,
         )
+        logging.info(f'{datetime.date.today()}: done.')
         return self.model
 
     def analyze(
@@ -182,7 +184,9 @@ class TrainModels:
         self.fit()
         # save model
         if self._path_to_models:
-            self.model.save(self._path_to_models.joinpath(f"{model_name}.h5"))
+            file_path = self._path_to_models.joinpath(f"{model_name}.h5")
+            self.model.save(file_path)
+            logging.info(f'{datetime.date.today()}: Model saved to {file_path}.')
         return self.model
 
     def __add_new_model_head(self) -> Model:
@@ -211,6 +215,7 @@ class TrainModels:
         else:
             args["weights"] = None
 
+        logging.info(f'{datetime.date.today()}: Parameters for training: {args}.')
         return args
 
     def set_model(self, model_name: str) -> Model:
