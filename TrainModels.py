@@ -47,7 +47,6 @@ class ExamineModels():
 
     model_pretrained = False
     model_name = None
-    model = None
 
     def __init__(self, path_to_data: Union[pl.Path, str], 
                  path_to_save_models: Union[str, pl.Path],
@@ -156,34 +155,14 @@ class ExamineModels():
         self._path_to_models
         self.model.save(self._path_to_models.joinpath(f'{model_name}.h5'))
         return True
-    
-    def _parse_model_name(self, model_name: str) -> bool:
-        # look for architecture
-        if re.match('MobileNet(V?[1-3])?((Small)|(Large))?', model_name, re.IGNORECASE):
-            # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
-            pass
-        else:
-            # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
-            # InceptionV3, InceptionResNetV2
-            # Xception
-            # VGG16, VGG19
-            pass
 
-        # look for 'pretrained' flag
-        if re.search('pretrained', model_name, re.IGNORECASE):
-            self.model_pretrained = True
-        else:
-            self.model_pretrained = False
-        
-        return True
-
-    def __add_new_head(self) -> bool:
+    def __add_new_model_head(self) -> bool:
         base_model = self.model
         model_head = Dense(2, activation='softmax')(base_model.output)
         self.model = Model(inputs=base_model.input, outputs=model_head)
         return True
-
-    def set_model(self, model_name: str) -> bool:
+    
+    def _set_model_parameters(self) -> dict:
         args = {'classes': self.n_classes}
         # input shape
         if re.match('RGB', self.color_mode, re.IGNORECASE):
@@ -194,19 +173,66 @@ class ExamineModels():
         # pretrained weights
         if self.model_pretrained:
             args['weights'] = 'ImageNet'
-            args['include_top'] = False
-            args['pooling'] = 'avg'
+            if self.n_classes != 1000:
+                args['include_top'] = False
+                args['pooling'] = 'avg'
         else:
             args['weights'] = None
+        
+        return args
 
+    def set_model(self, model_name: str) -> bool:
+        args = self._set_model_parameters()
 
-        self.model = MobileNet(*args)
-        self.model = MobileNetV2(*args)
-        self.model = MobileNetV3Small(*args)
-        self.model = MobileNetV3Large(*args)
+        
+        if re.match('Inception((V3)|(ResNetV2))', model_name):
+            # InceptionV3, InceptionResNetV2
 
-        if self.model_pretrained:
-            self.__add_new_head()
+            if self.model_name == 'InceptionV3':
+                self.model = InceptionV3(*args)
+        elif re.match('MobileNet(V[2,3])?((Small)|(Large))?', model_name):
+            # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
+
+            if self.model_name == 'MobileNet':
+                self.model = MobileNet(*args)
+            elif self.model_name == 'MobileNetV2':
+                self.model = MobileNetV2(*args)
+            elif self.model_name == 'MobileNetV3Small':
+                self.model = MobileNetV3Small(*args)
+            elif self.model_name == 'MobileNetV3Large':
+                self.model = MobileNetV3Large(*args)
+        elif re.match('ResNet[50,101,152](V2)?', self.model_name):
+            # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
+
+            if self.model_name == 'ResNet50':
+                self.model = ResNet50(*args)
+            elif self.model_name == 'ResNet101':
+                self.model = ResNet101(*args)
+            elif self.model_name == 'ResNet152':
+                self.model = ResNet152(*args)
+            elif self.model_name == 'ResNet50V2':
+                self.model = ResNet50V2(*args)
+            elif self.model_name == 'ResNet101V2':
+                self.model = ResNet101V2(*args)
+            elif self.model_name == 'ResNet152V2':
+                self.model = ResNet152V2(*args)
+        elif re.match('VGG[16,19]', model_name):
+            # VGG16, VGG19
+
+            if self.model_name == 'VGG16':
+                self.model = VGG16(*args)
+            elif self.model_name == 'VGG19':
+                self.model = VGG19(*args)
+        elif re.match('Xception', model_name):
+            # Xception
+
+            self.model = Xception(*args)
+        else:
+            raise ValueError(f'Unknown model architecture: {model_name}')
+        
+
+        if re.search('pretrain(ed)?', model_name, re.IGNORECASE):
+            self.__add_new_model_head()
             # compile model
         self._compile_model()
         return True
