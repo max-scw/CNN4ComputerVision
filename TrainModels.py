@@ -79,7 +79,6 @@ class TrainModels:
         self._path_to_models = pl.Path(path_to_save_models)
         self.epochs = epochs
         self._random_seed = random_seed
-        self.save_model = save_model
 
         random.seed(self._random_seed)
         # turn logging on
@@ -188,7 +187,10 @@ class TrainModels:
 
     def __add_new_model_head(self) -> Model:
         base_model = self.model
-        model_head = Dense(2, activation="softmax")(base_model.output)
+        x = base_model.output
+        for i in range(1):  # TODO: make optional
+            x = Dense(1024, activation="relu")(x)
+        model_head = Dense(self.n_classes, activation="softmax")(x)
         self.model = Model(inputs=base_model.input, outputs=model_head)
         return self.model
 
