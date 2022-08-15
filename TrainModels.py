@@ -29,15 +29,17 @@ from keras.models import Model
 from keras.preprocessing.image import ImageDataGenerator
 
 
-class ExamineModels():
+class TrainModels():
     # local/private variables
+    paths = None
     _path_to_data = None
     _path_to_models = None
+
     _data_generator = None
     _random_seed = None
     _file_extension = 'jpg'
     __split_names = {'training': 'Trn', 'validation': 'Val', 'test': 'Tst'}
-    paths = None
+    
     _batch_size = None
     n_files = None
     n_classes = 0
@@ -49,16 +51,16 @@ class ExamineModels():
     model_name = None
 
     def __init__(self, path_to_data: Union[pl.Path, str], 
-                 path_to_save_models: Union[str, pl.Path],
                  epochs: int,
-                 random_seed: int = 42
+                 random_seed: int = 42,
+                 path_to_save_models: Union[str, pl.Path] = None
                  ) -> None:
         # set local variables
         self._path_to_data = self.set_path_to_data(path_to_data)
         self._path_to_models = pl.Path(path_to_save_models)
         self.epochs = epochs
         self._random_seed = random_seed
-
+        self.save_model = save_model
 
         random.seed(self._random_seed)
         # turn logging on
@@ -146,23 +148,23 @@ class ExamineModels():
                        verbose=True)
         return self.model
 
-    def analyze(self, model_name: str, ) -> bool:
+    def analyze(self, model_name: str, ) -> Model:
         # set model
-
+        self.set_model(model_name)
         # train model
         self.fit()
         # save model
-        self._path_to_models
-        self.model.save(self._path_to_models.joinpath(f'{model_name}.h5'))
-        return True
+        if self._path_to_models:
+            self.model.save(self._path_to_models.joinpath(f'{model_name}.h5'))
+        return self.model
 
-    def __add_new_model_head(self) -> bool:
+    def __add_new_model_head(self) -> Model:
         base_model = self.model
         model_head = Dense(2, activation='softmax')(base_model.output)
         self.model = Model(inputs=base_model.input, outputs=model_head)
-        return True
+        return self.model
     
-    def _set_model_parameters(self) -> dict:
+    def _general_model_parameters(self) -> dict:
         args = {'classes': self.n_classes}
         # input shape
         if re.match('RGB', self.color_mode, re.IGNORECASE):
@@ -181,9 +183,8 @@ class ExamineModels():
         
         return args
 
-    def set_model(self, model_name: str) -> bool:
-        args = self._set_model_parameters()
-
+    def set_model(self, model_name: str) -> Model:
+        args = self._general_model_parameters()
         
         if re.match('Inception((V3)|(ResNetV2))', model_name):
             # InceptionV3, InceptionResNetV2
@@ -233,47 +234,25 @@ class ExamineModels():
 
         if re.search('pretrain(ed)?', model_name, re.IGNORECASE):
             self.__add_new_model_head()
-            # compile model
+            self.model_name += '_pretrained'
+
+        # compile model
         self._compile_model()
-        return True
+        return self.model
 
 
 
 if __name__ == '__main__':
     path_to_data_folder = pl.Path('Data')
     path_to_save_models = pl.Path('Models')
-    num_classes = 2  # FIXME: do not hardcode num_classes!
+    
+    models_to_analyze = ['MobileNet', 'MobileNetV2', 'InceptionV3']
 
-    batch_size = 36  # MUST BE A EVEN FRACTION OF THE TOTAL NUMBER OF EXAMPLES
-    steps_per_epoch = 1080/batch_size
+    train = TrainModels(path_to_data_folder, 
+                        epochs=2,
+                        save_model=False,
+                        verbose=True
+                        )
+    for mdl in models_to_analyze:
+        train.analyze(mdl)
 
-
-    # # default input shape of MobileNet: (224, 224, 3)
-    # img_size = (110, 110)
-    #
-    # random.seed(random_seed)
-    # gen = training_generator.flow_from_directory(path_to_data_folder, target_size=img_size, color_mode='rgb',
-    #                                              class_mode='categorical', batch_size=batch_size,
-    #                                              shuffle=True, seed=random_seed)
-    #
-    # model = MobileNetV2(input_shape=img_size + (3,),
-    #                     weights=None, classes=num_classes)
-    # # compile model
-    # model.compile(optimizer=Adam(),
-    #               loss='categorical_crossentropy',
-    #               metrics=['categorical_accuracy']
-    #               )
-    #
-    # # fit model
-    # model.fit(gen, steps_per_epoch=steps_per_epoch, verbose=True, epochs=2)
-    # # steps_per_epoch should be equivalent to the total number of samples divided by the batch size
-
-
-    img_size = (224, 224)
-
-    base_model = MobileNetV2(input_shape=img_size + (3,),
-                                 weights='imagenet', include_top=False, pooling='avg')
-
-    # TODO: add new top layer!
-
-    model.save(path_to_save_models.joinpath('MobileNetV2_pretrained.h5'))
