@@ -28,13 +28,12 @@ from keras.applications import (
     ResNet152V2,
     VGG16,
     VGG19,
-    Xception
+    Xception,
 )
 
 # https://keras.io/api/applications/
 
 from keras.optimizers import Adam
-from keras import Input
 from keras.layers import Dense
 from keras.models import Model
 
@@ -60,18 +59,21 @@ class TrainModels:
     model_pretrained = False
     model_name = None
 
-    def __init__(self,
-                 path_to_data: Union[pl.Path, str],
-                 epochs: int,
-                 random_seed: int = 42,
-                 path_to_save_models: Union[str, pl.Path] = None,
-                 verbose: bool = False,
-                 ) -> None:
+    def __init__(
+        self,
+        path_to_data: Union[pl.Path, str],
+        epochs: int,
+        random_seed: int = 42,
+        path_to_save_models: Union[str, pl.Path] = None,
+        verbose: bool = False,
+        file_extension: str = "jpg",
+    ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
         self.epochs = epochs
         self._random_seed = random_seed
         self.verbose = verbose
+        self._file_extension = "." + file_extension.replace(".", "")
 
         random.seed(self._random_seed)
 
@@ -83,15 +85,16 @@ class TrainModels:
         # turn logging on
         logging.basicConfig(filename="log.out", level=logging.INFO)
 
-    def set_path_to_data(self, path_to_data: Union[pl.Path, str],
-                         path_to_save_models: Union[pl.Path, str, None]) -> bool:
+    def set_path_to_data(
+        self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
+    ) -> bool:
         # TODO: check for correct folder structure!
         self._path_to_data = pl.Path(path_to_data)
 
         self.paths = dict()
         for el in self.__split_names.items():
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
-        self.paths['models'] = path_to_save_models
+        self.paths["models"] = path_to_save_models
         # TODO get n_classes
         self.get_n_classes()
         self.get_image_size()
@@ -110,7 +113,7 @@ class TrainModels:
         if self.img_size is None:
             p2file = None
             # find all images
-            for p2file in self._path_to_data.glob('**/*' + self._file_extension):
+            for p2file in self._path_to_data.glob("**/*" + self._file_extension):
                 if p2file:
                     break
             # read image
@@ -118,7 +121,7 @@ class TrainModels:
                 img = Image.open(p2file)
                 self.img_size = img.size
             else:
-                raise ValueError('No images found to infer the images size from.')
+                raise ValueError("No images found to infer the images size from.")
         # return image size
         return self.img_size
 
@@ -133,28 +136,30 @@ class TrainModels:
 
         if self._data_generator is None:
             # set data generator
-            self._data_generator = ImageDataGenerator(rescale=1.0 / 255,
-                                                      width_shift_range=[-0.2, 0.2],
-                                                      height_shift_range=[-0.2, 0.2],
-                                                      rotation_range=10,
-                                                      vertical_flip=True,
-                                                      horizontal_flip=True,
-                                                      brightness_range=[0.2, 2.0],
-                                                      preprocessing_function=__add_noise,
-                                                      zoom_range=[0.9, 1.1],
-                                                      )
+            self._data_generator = ImageDataGenerator(
+                rescale=1.0 / 255,
+                width_shift_range=[-0.2, 0.2],
+                height_shift_range=[-0.2, 0.2],
+                rotation_range=10,
+                vertical_flip=True,
+                horizontal_flip=True,
+                brightness_range=[0.2, 2.0],
+                preprocessing_function=__add_noise,
+                zoom_range=[0.9, 1.1],
+            )
         return self._data_generator
 
     def get_data_generator(self, key: str):
         # TODO: no augmentation + shuffle for test data!
-        return self.get_data_generator_instance().flow_from_directory(self.paths[key],
-                                                                      target_size=self.img_size,
-                                                                      color_mode=self.color_mode,
-                                                                      class_mode="categorical",
-                                                                      batch_size=self.get_batch_size(key),
-                                                                      shuffle=True,
-                                                                      seed=self._random_seed
-                                                                      )
+        return self.get_data_generator_instance().flow_from_directory(
+            self.paths[key],
+            target_size=self.img_size,
+            color_mode=self.color_mode,
+            class_mode="categorical",
+            batch_size=self.get_batch_size(key),
+            shuffle=True,
+            seed=self._random_seed,
+        )
 
     def get_batch_size(self, key: str) -> int:
         n_files = self.get_n_files(key)
@@ -183,20 +188,18 @@ class TrainModels:
 
     # ----- Models
     def _compile_model(self) -> bool:
-        self.model.compile(optimizer=Adam(),
-                           loss="categorical_crossentropy",
-                           metrics=["categorical_accuracy"]
-                           )
+        self.model.compile(optimizer=Adam(), loss="categorical_crossentropy", metrics=["categorical_accuracy"])
         return True
 
     def fit(self):
-        logging.info(f'{datetime.now()}: Start training {self.model_name} ...')
-        self.model.fit(x=self.get_data_generator("training"),
-                       steps_per_epoch=self.get_steps_per_epoch("training"),
-                       epochs=self.epochs,
-                       verbose=self.verbose
-                       )
-        logging.info(f'{datetime.now()}: done.')
+        logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
+        self.model.fit(
+            x=self.get_data_generator("training"),
+            steps_per_epoch=self.get_steps_per_epoch("training"),
+            epochs=self.epochs,
+            verbose=self.verbose,
+        )
+        logging.info(f"{datetime.now()}: done.")
         return self.model
 
     def analyze(self, model_name: str) -> Model:
@@ -205,10 +208,10 @@ class TrainModels:
         # train model
         self.fit()
         # save model
-        if self.paths['models']:
-            file_path = self.paths['models'].joinpath(f"{model_name}.h5")
+        if self.paths["models"]:
+            file_path = self.paths["models"].joinpath(f"{model_name}.h5")
             self.model.save(file_path)
-            logging.info(f'{datetime.now()}: Model saved to {file_path}.')
+            logging.info(f"{datetime.now()}: Model saved to {file_path}.")
         return self.model
 
     def __add_new_model_head(self) -> Model:
@@ -239,7 +242,7 @@ class TrainModels:
         else:  # color_mode == grayscale
             args["input_shape"] = self.img_size + (1,)
 
-        logging.info(f'{datetime.now()}: Parameters for training: {args}.')
+        logging.info(f"{datetime.now()}: Parameters for training: {args}.")
         return args
 
     def _match_model_name(self, model_name: str, input: str) -> bool:
