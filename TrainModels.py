@@ -13,28 +13,22 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # MobileNet(s)
 from keras.applications import (
+    InceptionV3,
+    InceptionResNetV2,
     MobileNet,
     MobileNetV2,
     MobileNetV3Small,
     MobileNetV3Large,
-)
-
-# ResNet(s)
-from keras.applications import (
     ResNet50,
     ResNet101,
     ResNet152,
     ResNet50V2,
     ResNet101V2,
     ResNet152V2,
+    VGG16,
+    VGG19,
+    Xception
 )
-
-# Inception
-from keras.applications import InceptionV3, InceptionResNetV2
-from keras.applications import Xception
-
-# VGG
-from keras.applications import VGG16, VGG19
 
 # https://keras.io/api/applications/
 
@@ -50,7 +44,6 @@ class TrainModels:
     # local/private variables
     paths = None
     _path_to_data = None
-    _path_to_models = None
 
     _data_generator = None
     _random_seed = None
@@ -63,37 +56,49 @@ class TrainModels:
     img_size = None
     color_mode = "rgb"
     epochs = None
+    verbose = False
 
     model_pretrained = False
     model_name = None
 
-    def __init__(
-        self,
-        path_to_data: Union[pl.Path, str],
-        epochs: int,
-        random_seed: int = 42,
-        path_to_save_models: Union[str, pl.Path] = None,
-    ) -> None:
+    def __init__(self,
+                 path_to_data: Union[pl.Path, str],
+                 epochs: int,
+                 random_seed: int = 42,
+                 path_to_save_models: Union[str, pl.Path] = None,
+                 verbose: bool = False,
+                 ) -> None:
         # set local variables
-        self._path_to_data = self.set_path_to_data(path_to_data)
-        self._path_to_models = pl.Path(path_to_save_models)
+        self.set_path_to_data(path_to_data, path_to_save_models)
         self.epochs = epochs
         self._random_seed = random_seed
+        self.verbose = verbose
 
         random.seed(self._random_seed)
         # turn logging on
         logging.basicConfig(filename="log.out", level=logging.INFO)
 
-    def set_path_to_data(self, path_to_data: Union[pl.Path, str]) -> bool:
+    def set_path_to_data(self, path_to_data: Union[pl.Path, str],
+                         path_to_save_models: Union[pl.Path, str, None]) -> bool:
         # TODO: check for correct folder structure!
         self._path_to_data = pl.Path(path_to_data)
 
+        self.paths = dict()
         for el in self.__split_names.items():
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
+        self.paths['models'] = path_to_save_models
         # TODO get n_classes
         return True
 
     def set_data_generator_instance(self) -> bool:
+        # nested local function
+        def __add_noise(img: np.ndarray) -> np.ndarray:
+            deviation = 50 * random.random()  # variability = 50
+            noise = np.random.normal(0, deviation, img.shape)
+            img += noise
+            np.clip(img, 0.0, 255.0)
+            return img
+
         self._data_generator = ImageDataGenerator(
             rescale=1.0 / 255,
             width_shift_range=[-0.2, 0.2],
@@ -105,37 +110,20 @@ class TrainModels:
             preprocessing_function=__add_noise,
             zoom_range=[0.9, 1.1],
         )
-        # nested local function
-        def __add_noise(img: np.ndarray) -> np.ndarray:
-            VARIABILITY = 50
-            deviation = VARIABILITY * random.random()
-            noise = np.random.normal(0, deviation, img.shape)
-            img += noise
-            np.clip(img, 0.0, 255.0)
-            return img
-
         return True
 
     def get_data_generator(self, key: str):
         # TODO: no augmentation + shuffle for test data!
-        return self._data_generator.flow_from_directory(
-            self.paths[key],
-            target_size=self.img_size,
-            color_mode=self.color_mode,
-            class_mode="categorical",
-            batch_size=self.batch_size[key],
-            shuffle=True,
-            seed=self._random_seed,
-        )
+        return self._data_generator.flow_from_directory(self.paths[key],
+                                                        target_size=self.img_size,
+                                                        color_mode=self.color_mode,
+                                                        class_mode="categorical",
+                                                        batch_size=self.batch_size[key],
+                                                        shuffle=True,
+                                                        seed=self._random_seed,
+                                                        )
 
     def _set_batch_sizes(self) -> bool:
-        self._batch_size = dict()
-        for ky in self.__split_names.keys():
-            files = self.paths[ky].glob("*" + self._file_extension)
-            self.n_files[ky] = len(files)
-            # set batch sizes
-            self._batch_size[ky] = self.__determine_batch_size(self.n_files[ky])
-
         def __determine_batch_size(n_files: int) -> int:
             batch_size = -1
             remainder = 9999
@@ -148,7 +136,13 @@ class TrainModels:
                     if remainder == 0:
                         break
             return batch_size
-
+        
+        self._batch_size = dict()
+        for ky in self.__split_names.keys():
+            files = self.paths[ky].glob("*" + self._file_extension)
+            self.n_files[ky] = len(files)
+            # set batch sizes
+            self._batch_size[ky] = self.__determine_batch_size(self.n_files[ky])
         return True
 
     def get_steps_per_epoch(self, key: str) -> int:
@@ -156,11 +150,10 @@ class TrainModels:
 
     # ----- Models
     def _compile_model(self) -> bool:
-        self.model.compile(
-            optimizer=Adam(),
-            loss="categorical_crossentropy",
-            metrics=["categorical_accuracy"],
-        )
+        self.model.compile(optimizer=Adam(),
+                           loss="categorical_crossentropy",
+                           metrics=["categorical_accuracy"]
+                           )
         return True
 
     def fit(self):
@@ -169,7 +162,7 @@ class TrainModels:
             self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
-            verbose=True,
+            verbose=self.verbose,
         )
         logging.info(f'{datetime.date.today()}: done.')
         return self.model
@@ -183,8 +176,8 @@ class TrainModels:
         # train model
         self.fit()
         # save model
-        if self._path_to_models:
-            file_path = self._path_to_models.joinpath(f"{model_name}.h5")
+        if self.paths['models']:
+            file_path = self.paths['models'].joinpath(f"{model_name}.h5")
             self.model.save(file_path)
             logging.info(f'{datetime.date.today()}: Model saved to {file_path}.')
         return self.model
@@ -281,6 +274,6 @@ if __name__ == "__main__":
 
     models_to_analyze = ["MobileNet", "MobileNetV2", "InceptionV3"]
 
-    train = TrainModels(path_to_data_folder, epochs=2, save_model=False, verbose=True)
+    train = TrainModels(path_to_data_folder, epochs=2, verbose=True)
     for mdl in models_to_analyze:
         train.analyze(mdl)
