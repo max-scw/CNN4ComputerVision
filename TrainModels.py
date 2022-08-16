@@ -173,13 +173,13 @@ class TrainModels:
 
     def get_n_files(self, key: str) -> int:
         n_files = 0
-        files = self.paths[key].glob("*" + self._file_extension)
+        files = self.paths[key].glob("*/*" + self._file_extension)
         for n_files, _ in enumerate(files):
             pass
         return n_files
 
     def get_steps_per_epoch(self, key: str) -> int:
-        return np.floor(self.get_n_files(key) / self.get_batch_size(key))
+        return int(np.floor(self.get_n_files(key) / self.get_batch_size(key)))
 
     # ----- Models
     def _compile_model(self) -> bool:
@@ -191,12 +191,11 @@ class TrainModels:
 
     def fit(self):
         logging.info(f'{datetime.now()}: Start training {self.model_name} ...')
-        self.model.fit(
-            self.get_data_generator("training"),
-            steps_per_epoch=self.get_steps_per_epoch("training"),
-            epochs=self.epochs,
-            verbose=self.verbose,
-        )
+        self.model.fit(x=self.get_data_generator("training"),
+                       steps_per_epoch=self.get_steps_per_epoch("training"),
+                       epochs=self.epochs,
+                       verbose=self.verbose
+                       )
         logging.info(f'{datetime.now()}: done.')
         return self.model
 
