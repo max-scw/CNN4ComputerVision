@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 import numpy as np
+from PIL import Image
 import pathlib as pl
 import random
 import re
@@ -88,15 +89,34 @@ class TrainModels:
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
         self.paths['models'] = path_to_save_models
         # TODO get n_classes
-        self._get_n_classes()
+        self.get_n_classes()
+        self.get_image_size()
         return True
 
-    def _get_n_classes(self) -> int:
-        dirs = []
-        for ky in self.__split_names.keys():
-            dirs += [e for e in self.paths[ky].iterdir() if e.is_dir()]
-        self.n_classes = len(np.unique(dirs))
+    def get_n_classes(self) -> int:
+        if self.n_classes is None:
+            dirs = []
+            for ky in self.__split_names.keys():
+                dirs += [e for e in self.paths[ky].iterdir() if e.is_dir()]
+            self.n_classes = len(np.unique(dirs))
+        # return number of classes
         return self.n_classes
+
+    def get_image_size(self) -> Tuple:
+        if self.img_size is None:
+            p2file = None
+            # find all images
+            for p2file in self._path_to_data.glob('**/*' + self._file_extension):
+                if p2file:
+                    break
+            # read image
+            if p2file:
+                img = Image.open(p2file)
+                self.img_size = img.size
+            else:
+                raise ValueError('No images found to infer the images size from.')
+        # return image size
+        return self.img_size
 
     def set_data_generator_instance(self) -> bool:
         # nested local function
@@ -144,7 +164,7 @@ class TrainModels:
                     if remainder == 0:
                         break
             return batch_size
-        
+
         self._batch_size = dict()
         for ky in self.__split_names.keys():
             files = self.paths[ky].glob("*" + self._file_extension)
@@ -165,14 +185,14 @@ class TrainModels:
         return True
 
     def fit(self):
-        logging.info(f'{datetime.date.today()}: Start training {self.model_name} ...')
+        logging.info(f'{datetime.now()}: Start training {self.model_name} ...')
         self.model.fit(
             self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
         )
-        logging.info(f'{datetime.date.today()}: done.')
+        logging.info(f'{datetime.now()}: done.')
         return self.model
 
     def analyze(self, model_name: str) -> Model:
@@ -184,7 +204,7 @@ class TrainModels:
         if self.paths['models']:
             file_path = self.paths['models'].joinpath(f"{model_name}.h5")
             self.model.save(file_path)
-            logging.info(f'{datetime.date.today()}: Model saved to {file_path}.')
+            logging.info(f'{datetime.now()}: Model saved to {file_path}.')
         return self.model
 
     def __add_new_model_head(self) -> Model:
@@ -213,7 +233,7 @@ class TrainModels:
         else:
             args["weights"] = None
 
-        logging.info(f'{datetime.date.today()}: Parameters for training: {args}.')
+        logging.info(f'{datetime.now()}: Parameters for training: {args}.')
         return args
 
     def set_model(self, model_name: str) -> Model:
