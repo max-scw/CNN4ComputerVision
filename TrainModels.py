@@ -88,7 +88,15 @@ class TrainModels:
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
         self.paths['models'] = path_to_save_models
         # TODO get n_classes
+        self._get_n_classes()
         return True
+
+    def _get_n_classes(self) -> int:
+        dirs = []
+        for ky in self.__split_names.keys():
+            dirs += [e for e in self.paths[ky].iterdir() if e.is_dir()]
+        self.n_classes = len(np.unique(dirs))
+        return self.n_classes
 
     def set_data_generator_instance(self) -> bool:
         # nested local function
@@ -120,7 +128,7 @@ class TrainModels:
                                                         class_mode="categorical",
                                                         batch_size=self.batch_size[key],
                                                         shuffle=True,
-                                                        seed=self._random_seed,
+                                                        seed=self._random_seed
                                                         )
 
     def _set_batch_sizes(self) -> bool:
@@ -167,10 +175,7 @@ class TrainModels:
         logging.info(f'{datetime.date.today()}: done.')
         return self.model
 
-    def analyze(
-        self,
-        model_name: str,
-    ) -> Model:
+    def analyze(self, model_name: str) -> Model:
         # set model
         self.set_model(model_name)
         # train model
