@@ -55,6 +55,7 @@ class TrainModels:
     color_mode = "rgb"
     epochs = None
     verbose = False
+    training_history = None
 
     model_pretrained = False
     model_name = None
@@ -150,16 +151,22 @@ class TrainModels:
         return self._data_generator
 
     def get_data_generator(self, key: str):
-        # TODO: no augmentation + shuffle for test data!
-        return self.get_data_generator_instance().flow_from_directory(
-            self.paths[key],
-            target_size=self.img_size,
-            color_mode=self.color_mode,
-            class_mode="categorical",
-            batch_size=self.get_batch_size(key),
-            shuffle=True,
-            seed=self._random_seed,
-        )
+        args = {"directory": self.paths[key],
+                "target_size": self.img_size,
+                "color_mode": self.color_mode,
+                "class_mode": "categorical",
+                "batch_size": self.get_batch_size(key)
+                }
+
+        if re.match("val(idation)?", key, re.IGNORECASE):
+            gen = ImageDataGenerator(rescale=1.0 / 255).flow_from_directory(**args)
+        else:
+            gen = self.get_data_generator_instance().flow_from_directory(
+                **args,
+                shuffle=True,
+                seed=self._random_seed,
+            )
+        return gen
 
     def get_batch_size(self, key: str) -> int:
         n_files = self.get_n_files(key)
@@ -193,13 +200,17 @@ class TrainModels:
 
     def fit(self):
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
-        self.model.fit(
+        self.training_history = self.model.fit(
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
         )
-        logging.info(f"{datetime.now()}: done.")
+        if self.epochs > 1:
+            final_metrics = {ky: self.training_history.history[ky][-1] for ky in self.training_history.history}
+        else:
+            final_metrics = self.training_history.history
+        logging.info(f"{datetime.now()}: done. \n {self.model_name}: {final_metrics}")
         return self.model
 
     def analyze(self, model_name: str) -> Model:
