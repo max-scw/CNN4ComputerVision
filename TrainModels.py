@@ -230,11 +230,18 @@ class TrainModels:
             if self.n_classes != 1000:
                 args["include_top"] = False
                 args["pooling"] = "avg"
+                self
         else:
             args["weights"] = None
 
         logging.info(f'{datetime.now()}: Parameters for training: {args}.')
         return args
+
+    def _match_model_name(self, model_name: str, input: str) -> bool:
+        if re.match(model_name, input, re.IGNORECASE):
+            self.model_name = model_name
+            return True
+        return False
 
     def set_model(self, model_name: str) -> Model:
         args = self._general_model_parameters()
@@ -242,42 +249,42 @@ class TrainModels:
         if re.match("Inception((V3)|(ResNetV2))", model_name):
             # InceptionV3, InceptionResNetV2
 
-            if self.model_name == "InceptionV3":
+            if self._match_model_name("InceptionV3", model_name):
                 self.model = InceptionV3(*args)
         elif re.match("MobileNet(V[2,3])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
-            if self.model_name == "MobileNet":
+            if self._match_model_name("MobileNet", model_name):
                 self.model = MobileNet(*args)
-            elif self.model_name == "MobileNetV2":
+            elif self._match_model_name("MobileNetV2", model_name):
                 self.model = MobileNetV2(*args)
-            elif self.model_name == "MobileNetV3Small":
+            elif self._match_model_name("MobileNetV3Small", model_name):
                 self.model = MobileNetV3Small(*args)
-            elif self.model_name == "MobileNetV3Large":
+            elif self._match_model_name("MobileNetV3Large", model_name):
                 self.model = MobileNetV3Large(*args)
         elif re.match("ResNet[50,101,152](V2)?", self.model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
-            if self.model_name == "ResNet50":
+            if self._match_model_name("ResNet50", model_name):
                 self.model = ResNet50(*args)
-            elif self.model_name == "ResNet101":
+            elif self._match_model_name("ResNet101", model_name):
                 self.model = ResNet101(*args)
-            elif self.model_name == "ResNet152":
+            elif self._match_model_name("ResNet152", model_name):
                 self.model = ResNet152(*args)
-            elif self.model_name == "ResNet50V2":
+            elif self._match_model_name("ResNet50V2", model_name):
                 self.model = ResNet50V2(*args)
-            elif self.model_name == "ResNet101V2":
+            elif self._match_model_name("ResNet101V2", model_name):
                 self.model = ResNet101V2(*args)
-            elif self.model_name == "ResNet152V2":
+            elif self._match_model_name("ResNet152V2", model_name):
                 self.model = ResNet152V2(*args)
         elif re.match("VGG[16,19]", model_name):
             # VGG16, VGG19
 
-            if self.model_name == "VGG16":
+            if self._match_model_name("VGG16", model_name):
                 self.model = VGG16(*args)
-            elif self.model_name == "VGG19":
+            elif self._match_model_name("VGG19", model_name):
                 self.model = VGG19(*args)
-        elif re.match("Xception", model_name):
+        elif self._match_model_name("Xception", model_name):
             # Xception
 
             self.model = Xception(*args)
