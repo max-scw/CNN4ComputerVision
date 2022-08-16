@@ -51,9 +51,7 @@ class TrainModels:
     _file_extension = "jpg"
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
 
-    _batch_size = None
-    n_files = None
-    n_classes = 0
+    n_classes = None
     img_size = None
     color_mode = "rgb"
     epochs = None
@@ -76,6 +74,12 @@ class TrainModels:
         self.verbose = verbose
 
         random.seed(self._random_seed)
+
+        # set classes
+        self.get_n_classes()
+        # set data generator
+        self.get_data_generator_instance()
+
         # turn logging on
         logging.basicConfig(filename="log.out", level=logging.INFO)
 
@@ -97,7 +101,7 @@ class TrainModels:
         if self.n_classes is None:
             dirs = []
             for ky in self.__split_names.keys():
-                dirs += [e for e in self.paths[ky].iterdir() if e.is_dir()]
+                dirs += [el.name for el in self.paths[ky].iterdir() if el.is_dir()]
             self.n_classes = len(np.unique(dirs))
         # return number of classes
         return self.n_classes
@@ -118,7 +122,7 @@ class TrainModels:
         # return image size
         return self.img_size
 
-    def set_data_generator_instance(self) -> bool:
+    def get_data_generator_instance(self) -> ImageDataGenerator:
         # nested local function
         def __add_noise(img: np.ndarray) -> np.ndarray:
             deviation = 50 * random.random()  # variability = 50
@@ -127,54 +131,55 @@ class TrainModels:
             np.clip(img, 0.0, 255.0)
             return img
 
-        self._data_generator = ImageDataGenerator(
-            rescale=1.0 / 255,
-            width_shift_range=[-0.2, 0.2],
-            height_shift_range=[-0.2, 0.2],
-            rotation_range=10,
-            vertical_flip=True,
-            horizontal_flip=True,
-            brightness_range=[0.2, 2.0],
-            preprocessing_function=__add_noise,
-            zoom_range=[0.9, 1.1],
-        )
-        return True
+        if self._data_generator is None:
+            # set data generator
+            self._data_generator = ImageDataGenerator(rescale=1.0 / 255,
+                                                      width_shift_range=[-0.2, 0.2],
+                                                      height_shift_range=[-0.2, 0.2],
+                                                      rotation_range=10,
+                                                      vertical_flip=True,
+                                                      horizontal_flip=True,
+                                                      brightness_range=[0.2, 2.0],
+                                                      preprocessing_function=__add_noise,
+                                                      zoom_range=[0.9, 1.1],
+                                                      )
+        return self._data_generator
 
     def get_data_generator(self, key: str):
         # TODO: no augmentation + shuffle for test data!
-        return self._data_generator.flow_from_directory(self.paths[key],
-                                                        target_size=self.img_size,
-                                                        color_mode=self.color_mode,
-                                                        class_mode="categorical",
-                                                        batch_size=self.batch_size[key],
-                                                        shuffle=True,
-                                                        seed=self._random_seed
-                                                        )
+        return self.get_data_generator_instance().flow_from_directory(self.paths[key],
+                                                                      target_size=self.img_size,
+                                                                      color_mode=self.color_mode,
+                                                                      class_mode="categorical",
+                                                                      batch_size=self.get_batch_size(key),
+                                                                      shuffle=True,
+                                                                      seed=self._random_seed
+                                                                      )
 
-    def _set_batch_sizes(self) -> bool:
-        def __determine_batch_size(n_files: int) -> int:
-            batch_size = -1
-            remainder = 9999
-            # find most suitable batch size #TODO: ensure that no invalid numbers can be selected
-            for sz in range(30, 9, -1):
-                tmp_remainder = n_files % sz
-                if tmp_remainder < remainder:
-                    remainder = tmp_remainder
-                    batch_size = sz
-                    if remainder == 0:
-                        break
-            return batch_size
+    def get_batch_size(self, key: str) -> int:
+        n_files = self.get_n_files(key)
 
-        self._batch_size = dict()
-        for ky in self.__split_names.keys():
-            files = self.paths[ky].glob("*" + self._file_extension)
-            self.n_files[ky] = len(files)
-            # set batch sizes
-            self._batch_size[ky] = self.__determine_batch_size(self.n_files[ky])
-        return True
+        batch_size = -1
+        remainder = 9999
+        # find most suitable batch size #TODO: ensure that no invalid numbers can be selected
+        for sz in range(30, 9, -1):
+            tmp_remainder = n_files % sz
+            if tmp_remainder < remainder:
+                remainder = tmp_remainder
+                batch_size = sz
+                if remainder == 0:
+                    break
+        return batch_size
+
+    def get_n_files(self, key: str) -> int:
+        n_files = 0
+        files = self.paths[key].glob("*" + self._file_extension)
+        for n_files, _ in enumerate(files):
+            pass
+        return n_files
 
     def get_steps_per_epoch(self, key: str) -> int:
-        return np.floor(self.n_files[key] / self._batch_size[key])
+        return np.floor(self.get_n_files(key) / self.get_batch_size(key))
 
     # ----- Models
     def _compile_model(self) -> bool:
@@ -217,22 +222,23 @@ class TrainModels:
         return self.model
 
     def _general_model_parameters(self) -> dict:
-        args = {"classes": self.n_classes}
+        args = {"classes": self.get_n_classes()}
+        # pretrained weights
+        if self.model_pretrained:
+            args["weights"] = "ImageNet"
+            self.img_size = (224, 224)
+            self.color_mode = "RGB"
+            if self.n_classes != 1000:
+                args["include_top"] = False
+                args["pooling"] = "avg"
+        else:
+            args["weights"] = None
+
         # input shape
         if re.match("RGB", self.color_mode, re.IGNORECASE):
             args["input_shape"] = self.img_size + (3,)
         else:  # color_mode == grayscale
             args["input_shape"] = self.img_size + (1,)
-
-        # pretrained weights
-        if self.model_pretrained:
-            args["weights"] = "ImageNet"
-            if self.n_classes != 1000:
-                args["include_top"] = False
-                args["pooling"] = "avg"
-                self
-        else:
-            args["weights"] = None
 
         logging.info(f'{datetime.now()}: Parameters for training: {args}.')
         return args
@@ -244,54 +250,59 @@ class TrainModels:
         return False
 
     def set_model(self, model_name: str) -> Model:
+        if re.search("pretrain(ed)?", model_name, re.IGNORECASE):
+            self.model_pretrained = True
+        else:
+            self.model_pretrained = False
+
         args = self._general_model_parameters()
 
         if re.match("Inception((V3)|(ResNetV2))", model_name):
             # InceptionV3, InceptionResNetV2
 
             if self._match_model_name("InceptionV3", model_name):
-                self.model = InceptionV3(*args)
+                self.model = InceptionV3(**args)
         elif re.match("MobileNet(V[2,3])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
             if self._match_model_name("MobileNet", model_name):
-                self.model = MobileNet(*args)
+                self.model = MobileNet(**args)
             elif self._match_model_name("MobileNetV2", model_name):
-                self.model = MobileNetV2(*args)
+                self.model = MobileNetV2(**args)
             elif self._match_model_name("MobileNetV3Small", model_name):
-                self.model = MobileNetV3Small(*args)
+                self.model = MobileNetV3Small(**args)
             elif self._match_model_name("MobileNetV3Large", model_name):
-                self.model = MobileNetV3Large(*args)
+                self.model = MobileNetV3Large(**args)
         elif re.match("ResNet[50,101,152](V2)?", self.model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
             if self._match_model_name("ResNet50", model_name):
-                self.model = ResNet50(*args)
+                self.model = ResNet50(**args)
             elif self._match_model_name("ResNet101", model_name):
-                self.model = ResNet101(*args)
+                self.model = ResNet101(**args)
             elif self._match_model_name("ResNet152", model_name):
-                self.model = ResNet152(*args)
+                self.model = ResNet152(**args)
             elif self._match_model_name("ResNet50V2", model_name):
-                self.model = ResNet50V2(*args)
+                self.model = ResNet50V2(**args)
             elif self._match_model_name("ResNet101V2", model_name):
-                self.model = ResNet101V2(*args)
+                self.model = ResNet101V2(**args)
             elif self._match_model_name("ResNet152V2", model_name):
-                self.model = ResNet152V2(*args)
+                self.model = ResNet152V2(**args)
         elif re.match("VGG[16,19]", model_name):
             # VGG16, VGG19
 
             if self._match_model_name("VGG16", model_name):
-                self.model = VGG16(*args)
+                self.model = VGG16(**args)
             elif self._match_model_name("VGG19", model_name):
-                self.model = VGG19(*args)
+                self.model = VGG19(**args)
         elif self._match_model_name("Xception", model_name):
             # Xception
 
-            self.model = Xception(*args)
+            self.model = Xception(**args)
         else:
             raise ValueError(f"Unknown model architecture: {model_name}")
 
-        if re.search("pretrain(ed)?", model_name, re.IGNORECASE):
+        if self.model_pretrained:
             self.__add_new_model_head()
             self.model_name += "_pretrained"
 
