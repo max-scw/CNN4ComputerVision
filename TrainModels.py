@@ -49,6 +49,10 @@ class TrainModels:
     _random_seed = None
     _file_extension = "jpg"
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
+    __log_file_name = "log.out"
+    __batch_size_max = 30
+    __batch_size_min = 10
+    _n_dense_layers_for_new_head = 1
 
     n_classes = None
     img_size = None
@@ -76,15 +80,13 @@ class TrainModels:
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
 
-        random.seed(self._random_seed)
-
         # set classes
         self.get_n_classes()
         # set data generator
         self.get_data_generator_instance()
 
         # turn logging on
-        logging.basicConfig(filename="log.out", level=logging.INFO)
+        logging.basicConfig(filename=self.__log_file_name, level=logging.INFO)
 
     def set_path_to_data(
         self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
@@ -174,8 +176,8 @@ class TrainModels:
 
         batch_size = -1
         remainder = 9999
-        # find most suitable batch size #TODO: ensure that no invalid numbers can be selected
-        for sz in range(30, 9, -1):
+        # find most suitable batch size
+        for sz in range(self.__batch_size_max, self.__batch_size_min - 1, -1):
             tmp_remainder = n_files % sz
             if tmp_remainder < remainder:
                 remainder = tmp_remainder
@@ -200,6 +202,9 @@ class TrainModels:
         return True
 
     def fit(self):
+        # set random seed
+        random.seed(self._random_seed)
+        # start training
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
         self.training_history = self.model.fit(
             x=self.get_data_generator("training"),
@@ -229,8 +234,8 @@ class TrainModels:
     def __add_new_model_head(self) -> Model:
         base_model = self.model
         x = base_model.output
-        for i in range(1):  # TODO: make optional
-            x = Dense(1024, activation="relu")(x)
+        for i in range(self._n_dense_layers_for_new_head):
+            x = Dense(1024, activation="ReLU")(x)
         model_head = Dense(self.n_classes, activation="softmax")(x)
         self.model = Model(inputs=base_model.input, outputs=model_head)
         return self.model
