@@ -95,10 +95,11 @@ class TrainModels:
         self.paths = dict()
         for el in self.__split_names.items():
             self.paths[el[0]] = self._path_to_data.joinpath(el[1])
-        self.paths["models"] = path_to_save_models
-        # TODO get n_classes
-        self.get_n_classes()
-        self.get_image_size()
+        if path_to_save_models:
+            self.paths["models"] = path_to_save_models
+            # create directory if necessary
+            self.paths["models"].mkdir(parents=False, exist_ok=True)
+
         return True
 
     def get_n_classes(self) -> int:
