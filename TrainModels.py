@@ -70,6 +70,7 @@ class TrainModels:
         path_to_save_models: Union[str, pl.Path] = None,
         verbose: bool = False,
         file_extension: str = "jpg",
+        color_mode: str = "RGB"
     ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
@@ -77,6 +78,7 @@ class TrainModels:
         self._random_seed = random_seed
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
+        self.color_mode = color_mode  # TODO: set color_mode from model string!
 
         # set classes
         self.get_n_classes()
@@ -133,11 +135,17 @@ class TrainModels:
                 "batch_size": self.get_batch_size(key)
                 }
 
-        def __add_noise(img: np.ndarray) -> np.ndarray:
+        def add_noise(img: np.ndarray) -> np.ndarray:
             deviation = 50 * random.random()  # variability = 50
             noise = np.random.normal(0, deviation, img.shape)
             img += noise
             np.clip(img, 0.0, 255.0)
+            return img
+
+        def preproc(img: np.ndarray, color_mode: str) -> Image:
+            img = add_noise(img)
+            if not re.match("RGB", color_mode, re.IGNORECASE):
+                img = np.expand_dims(np.mean(img, axis=2), 2)
             return img
 
         if re.match("train(ing)?", key, re.IGNORECASE):
@@ -149,7 +157,7 @@ class TrainModels:
                 vertical_flip=True,
                 horizontal_flip=True,
                 brightness_range=[0.2, 2.0],
-                preprocessing_function=__add_noise,
+                preprocessing_function=lambda x: preproc(x, self.color_mode),
                 zoom_range=[0.9, 1.1],
             ).flow_from_directory(
                 **args,
@@ -195,6 +203,7 @@ class TrainModels:
         random.seed(self._random_seed)
         # start training
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
+        print(f"Training {self.model_name} for {self.epochs} epochs")
         self.training_history = self.model.fit(
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
@@ -214,7 +223,7 @@ class TrainModels:
         # train model
         self.fit()
         # save model
-        if self.paths["models"]:
+        if "models" in self.paths and self.paths["models"]:
             file_path = self.paths["models"].joinpath(f"{model_name}.h5")
             self.model.save(file_path)
             logging.info(f"{datetime.now()}: Model saved to {file_path}.")
@@ -258,10 +267,19 @@ class TrainModels:
         return False
 
     def set_model(self, model_name: str) -> Model:
-        if re.search("pretrain(ed)?", model_name, re.IGNORECASE):
+        # set flag for using pretrained weights
+        if re.search(r"[\s,-_\.]pretrain(ed)?", model_name, re.IGNORECASE):
             self.model_pretrained = True
         else:
             self.model_pretrained = False
+
+        # set color mode
+        if re.search(r"[\s,-_\.]gray", model_name, re.IGNORECASE):
+            self.color_mode = "grayscale"
+            if self.model_pretrained:
+                raise ValueError('Cannot use grayscale images with pretrained weights.')
+        else:
+            self.color_mode = "RGB"
 
         args = self._general_model_parameters()
 
@@ -283,7 +301,7 @@ class TrainModels:
                 self.model = MobileNetV3Small(**args)
             elif self._match_model_name("MobileNetV3Large", model_name):
                 self.model = MobileNetV3Large(**args)
-        elif re.match("ResNet((50)|(101)|(152))(V2)?", self.model_name):
+        elif re.match("ResNet((50)|(101)|(152))(V2)?", model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
             if self._match_model_name("ResNet50", model_name):
@@ -340,7 +358,11 @@ if __name__ == "__main__":
                          "VGG16",
                          "VGG19",
                          "Xception"]
+    # TODO: [el + '-pretrained' for el in models_to_analyze]
+    # TODO: [el + '-grayscale' for el in models_to_analyze]
+    models_to_analyze = ["MobileNetV2-grayscaled"]
 
     train = TrainModels(path_to_data_folder, epochs=2, verbose=True)
     for mdl in models_to_analyze:
         train.analyze(mdl)
+    print('done.')
