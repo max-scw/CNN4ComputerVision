@@ -12,7 +12,6 @@ import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-# MobileNet(s)
 from keras.applications import (
     InceptionV3,
     InceptionResNetV2,
@@ -28,7 +27,7 @@ from keras.applications import (
     ResNet152V2,
     VGG16,
     VGG19,
-    Xception,
+    Xception
 )
 
 # https://keras.io/api/applications/
@@ -81,8 +80,6 @@ class TrainModels:
 
         # set classes
         self.get_n_classes()
-        # set data generator
-        self.get_data_generator_instance()
 
         # turn logging on
         logging.basicConfig(filename=self.__log_file_name, level=logging.INFO)
@@ -247,9 +244,9 @@ class TrainModels:
 
         # input shape
         if re.match("RGB", self.color_mode, re.IGNORECASE):
-            args["input_shape"] = self.img_size + (3,)
+            args["input_shape"] = self.get_image_size() + (3,)
         else:  # color_mode == grayscale
-            args["input_shape"] = self.img_size + (1,)
+            args["input_shape"] = self.get_image_size() + (1,)
 
         logging.info(f"{datetime.now()}: Parameters for training: {args}.")
         return args
@@ -273,6 +270,8 @@ class TrainModels:
 
             if self._match_model_name("InceptionV3", model_name):
                 self.model = InceptionV3(**args)
+            elif self._match_model_name("InceptionResNetV2", model_name):
+                self.model = InceptionResNetV2(**args)
         elif re.match("MobileNet(V[23])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
@@ -326,7 +325,21 @@ if __name__ == "__main__":
     path_to_data_folder = pl.Path("Data")
     path_to_save_models = pl.Path("Models")
 
-    models_to_analyze = ["MobileNet", "MobileNetV2", "InceptionV3"]
+    models_to_analyze = ["InceptionV3",
+                         "InceptionResNetV2",
+                         "MobileNet",
+                         "MobileNetV2",
+                         "MobileNetV3Small",
+                         "MobileNetV3Large",
+                         "ResNet50",
+                         "ResNet101",
+                         "ResNet152",
+                         "ResNet50V2",
+                         "ResNet101V2",
+                         "ResNet152V2",
+                         "VGG16",
+                         "VGG19",
+                         "Xception"]
 
     train = TrainModels(path_to_data_folder, epochs=2, verbose=True)
     for mdl in models_to_analyze:
