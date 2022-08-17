@@ -223,11 +223,22 @@ class TrainModels:
         # train model
         self.fit()
         # save model
-        if "models" in self.paths and self.paths["models"]:
-            file_path = self.paths["models"].joinpath(f"{model_name}.h5")
-            self.model.save(file_path)
-            logging.info(f"{datetime.now()}: Model saved to {file_path}.")
+        self._save_model()
         return self.model
+    
+    def _save_model(self) -> bool:
+        if "models" in self.paths and self.paths["models"]:
+            # create file name
+            file_name = f"{self.model_name}_{self.color_mode}"
+            if self.model_pretrained:
+                file_name += "-pretrained"
+            # build file path
+            file_path = self.paths["models"].joinpath(file_name + ".h5")
+            # save model to file
+            self.model.save(file_path)
+            # log
+            logging.info(f"{datetime.now()}: Model saved to {file_path}.")
+        return True
 
     def __add_new_model_head(self) -> Model:
         base_model = self.model
