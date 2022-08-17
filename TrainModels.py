@@ -78,7 +78,6 @@ class TrainModels:
         self._random_seed = random_seed
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
-        self.color_mode = color_mode  # TODO: set color_mode from model string!
 
         # set classes
         self.get_n_classes()
@@ -214,7 +213,7 @@ class TrainModels:
             final_metrics = {ky: self.training_history.history[ky][-1] for ky in self.training_history.history}
         else:
             final_metrics = self.training_history.history
-        logging.info(f"{datetime.now()}: done. \n {self.model_name}: {final_metrics}")
+        logging.info(f"{datetime.now()}: done: {self.model_name}: {final_metrics}.")
         return self.model
 
     def analyze(self, model_name: str) -> Model:
@@ -225,7 +224,7 @@ class TrainModels:
         # save model
         self._save_model()
         return self.model
-    
+
     def _save_model(self) -> bool:
         if "models" in self.paths and self.paths["models"]:
             # create file name
@@ -253,9 +252,9 @@ class TrainModels:
         args = {"classes": self.get_n_classes()}
         # pretrained weights
         if self.model_pretrained:
-            args["weights"] = "ImageNet"
+            args["weights"] = "ImageNet".lower()
             self.img_size = (224, 224)
-            self.color_mode = "RGB"
+            self.color_mode = "RGB".lower()
             if self.n_classes != 1000:
                 args["include_top"] = False
                 args["pooling"] = "avg"
@@ -290,7 +289,7 @@ class TrainModels:
             if self.model_pretrained:
                 raise ValueError('Cannot use grayscale images with pretrained weights.')
         else:
-            self.color_mode = "RGB"
+            self.color_mode = "RGB".lower()
 
         args = self._general_model_parameters()
 
