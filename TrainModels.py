@@ -45,7 +45,6 @@ class TrainModels:
     paths = None
     _path_to_data = None
 
-    _data_generator = None
     _random_seed = None
     _file_extension = "jpg"
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
@@ -129,8 +128,14 @@ class TrainModels:
         # return image size
         return self.img_size
 
-    def get_data_generator_instance(self) -> ImageDataGenerator:
-        # nested local function
+    def get_data_generator(self, key: str):
+        args = {"directory": self.paths[key],
+                "target_size": self.img_size,
+                "color_mode": self.color_mode,
+                "class_mode": "categorical",
+                "batch_size": self.get_batch_size(key)
+                }
+
         def __add_noise(img: np.ndarray) -> np.ndarray:
             deviation = 50 * random.random()  # variability = 50
             noise = np.random.normal(0, deviation, img.shape)
@@ -138,9 +143,8 @@ class TrainModels:
             np.clip(img, 0.0, 255.0)
             return img
 
-        if self._data_generator is None:
-            # set data generator
-            self._data_generator = ImageDataGenerator(
+        if re.match("train(ing)?", key, re.IGNORECASE):
+            gen = ImageDataGenerator(
                 rescale=1.0 / 255,
                 width_shift_range=[-0.2, 0.2],
                 height_shift_range=[-0.2, 0.2],
@@ -150,25 +154,13 @@ class TrainModels:
                 brightness_range=[0.2, 2.0],
                 preprocessing_function=__add_noise,
                 zoom_range=[0.9, 1.1],
-            )
-        return self._data_generator
-
-    def get_data_generator(self, key: str):
-        args = {"directory": self.paths[key],
-                "target_size": self.img_size,
-                "color_mode": self.color_mode,
-                "class_mode": "categorical",
-                "batch_size": self.get_batch_size(key)
-                }
-
-        if re.match("val(idation)?", key, re.IGNORECASE):
-            gen = ImageDataGenerator(rescale=1.0 / 255).flow_from_directory(**args)
-        else:
-            gen = self.get_data_generator_instance().flow_from_directory(
+            ).flow_from_directory(
                 **args,
                 shuffle=True,
                 seed=self._random_seed,
             )
+        else:
+            gen = ImageDataGenerator(rescale=1.0 / 255).flow_from_directory(**args)
         return gen
 
     def get_batch_size(self, key: str) -> int:
@@ -202,7 +194,7 @@ class TrainModels:
         return True
 
     def fit(self):
-        # set random seed
+        # set random seed | necessary for the nested function in the data generator which produces
         random.seed(self._random_seed)
         # start training
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
