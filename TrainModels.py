@@ -275,7 +275,7 @@ class TrainModels:
 
             if self._match_model_name("InceptionV3", model_name):
                 self.model = InceptionV3(**args)
-        elif re.match("MobileNet(V[2,3])?((Small)|(Large))?", model_name):
+        elif re.match("MobileNet(V[23])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
             if self._match_model_name("MobileNet", model_name):
@@ -286,7 +286,7 @@ class TrainModels:
                 self.model = MobileNetV3Small(**args)
             elif self._match_model_name("MobileNetV3Large", model_name):
                 self.model = MobileNetV3Large(**args)
-        elif re.match("ResNet[50,101,152](V2)?", self.model_name):
+        elif re.match("ResNet((50)|(101)|(152))(V2)?", self.model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
             if self._match_model_name("ResNet50", model_name):
@@ -301,7 +301,7 @@ class TrainModels:
                 self.model = ResNet101V2(**args)
             elif self._match_model_name("ResNet152V2", model_name):
                 self.model = ResNet152V2(**args)
-        elif re.match("VGG[16,19]", model_name):
+        elif re.match("VGG((16)|(19))", model_name):
             # VGG16, VGG19
 
             if self._match_model_name("VGG16", model_name):
