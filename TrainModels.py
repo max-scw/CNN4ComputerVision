@@ -33,6 +33,7 @@ from keras.applications import (
 # https://keras.io/api/applications/
 
 from keras.optimizers import Adam
+from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
 from keras.layers import Dense
 from keras.models import Model
 
@@ -194,7 +195,15 @@ class TrainModels:
 
     # ----- Models
     def _compile_model(self) -> bool:
-        self.model.compile(optimizer=Adam(), loss="categorical_crossentropy", metrics=["categorical_accuracy"])
+        # default constant learning rate for Adam: 0.001 = 1e-3
+        if self.model_pretrained:
+            learning_rate = ExponentialDecay(initial_learning_rate=1e-3, decay_steps=5000, decay_rate=0.9)
+        else:
+            learning_rate = PiecewiseConstantDecay(boundaties=[50, 500, 1500], values=[1e-2, 1e-3, 1e-4, 1e-5])
+
+        self.model.compile(optimizer=Adam(learning_rate=learning_rate),
+                           loss="categorical_crossentropy",
+                           metrics=["categorical_accuracy"])
         return True
 
     def fit(self):
@@ -230,7 +239,7 @@ class TrainModels:
             # create file name
             file_name = f"{self.model_name}_{self.color_mode}"
             if self.model_pretrained:
-                file_name += "-pretrained"
+                file_name += "-pretrained" # TODO: make optional to train on what weights
             # build file path
             file_path = self.paths["models"].joinpath(file_name + ".h5")
             # save model to file
@@ -370,7 +379,7 @@ if __name__ == "__main__":
                          "Xception"]
     # TODO: [el + '-pretrained' for el in models_to_analyze]
     # TODO: [el + '-grayscale' for el in models_to_analyze]
-    models_to_analyze = ["MobileNetV2-grayscaled"]
+    models_to_analyze = ["MobileNetV2-grayscaled", "MobileNetV2-pretrained"]
 
     train = TrainModels(path_to_data_folder, epochs=2, verbose=True)
     for mdl in models_to_analyze:
