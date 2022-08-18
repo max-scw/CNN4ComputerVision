@@ -1,10 +1,12 @@
-from datetime import datetime
-import logging
+
 import numpy as np
+import pandas as pd
 from PIL import Image
 import pathlib as pl
 import random
 import re
+from datetime import datetime
+import logging
 from typing import Union, Tuple
 
 import os
@@ -174,7 +176,8 @@ class TrainModels:
         batch_size = -1
         remainder = 9999
         # find most suitable batch size
-        for sz in range(self.__batch_size_max, self.__batch_size_min - 1, -1):
+        batch_size_max = np.min([self.__batch_size_max, n_files])
+        for sz in range(batch_size_max, self.__batch_size_min - 1, -1):
             tmp_remainder = n_files % sz
             if tmp_remainder < remainder:
                 remainder = tmp_remainder
@@ -188,7 +191,7 @@ class TrainModels:
         files = self.paths[key].glob("*/*" + self._file_extension)
         for n_files, _ in enumerate(files):
             pass
-        return n_files
+        return n_files + 1
 
     def get_steps_per_epoch(self, key: str) -> int:
         return int(np.floor(self.get_n_files(key) / self.get_batch_size(key)))
@@ -199,11 +202,11 @@ class TrainModels:
         if self.model_pretrained:
             learning_rate = ExponentialDecay(initial_learning_rate=1e-3, decay_steps=5000, decay_rate=0.9)
         else:
-            learning_rate = PiecewiseConstantDecay(boundaties=[50, 500, 1500], values=[1e-2, 1e-3, 1e-4, 1e-5])
+            learning_rate = PiecewiseConstantDecay(boundaries=[50, 500, 1500], values=[1e-2, 1e-3, 1e-4, 1e-5])
 
         self.model.compile(optimizer=Adam(learning_rate=learning_rate),
                            loss="categorical_crossentropy",
-                           metrics=["categorical_accuracy"])
+                           metrics=["accuracy"])
         return True
 
     def fit(self):
@@ -212,17 +215,14 @@ class TrainModels:
         # start training
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
         print(f"Training {self.model_name} for {self.epochs} epochs")
-        self.training_history = self.model.fit(
+        history = self.model.fit(
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
-            verbose=self.verbose,
+            verbose=self.verbose
         )
-        if self.epochs > 1:
-            final_metrics = {ky: self.training_history.history[ky][-1] for ky in self.training_history.history}
-        else:
-            final_metrics = self.training_history.history
-        logging.info(f"{datetime.now()}: done: {self.model_name}: {final_metrics}.")
+        self.training_history = pd.DataFrame(history.history)
+        logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
 
     def analyze(self, model_name: str) -> Model:
@@ -237,7 +237,8 @@ class TrainModels:
     def _save_model(self) -> bool:
         if "models" in self.paths and self.paths["models"]:
             # create file name
-            file_name = f"{self.model_name}_{self.color_mode}"
+            date_str = datetime.now().strftime(format="%y%m%d")
+            file_name = f"{date_str}_{self.model_name}_{self.color_mode}"
             if self.model_pretrained:
                 file_name += "-pretrained" # TODO: make optional to train on what weights
             # build file path
@@ -246,6 +247,9 @@ class TrainModels:
             self.model.save(file_path)
             # log
             logging.info(f"{datetime.now()}: Model saved to {file_path}.")
+            # save history to file
+            file_path = self.paths["models"].joinpath(file_name + ".csv")
+            self.training_history.to_csv(file_path, index=False)
         return True
 
     def __add_new_model_head(self) -> Model:
@@ -381,7 +385,7 @@ if __name__ == "__main__":
     # TODO: [el + '-grayscale' for el in models_to_analyze]
     models_to_analyze = ["MobileNetV2-grayscaled", "MobileNetV2-pretrained"]
 
-    train = TrainModels(path_to_data_folder, epochs=2, verbose=True)
+    train = TrainModels(path_to_data_folder, epochs=2, verbose=True, path_to_save_models=path_to_save_models)
     for mdl in models_to_analyze:
         train.analyze(mdl)
     print('done.')
