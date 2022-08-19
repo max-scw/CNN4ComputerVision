@@ -38,8 +38,29 @@ from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
 from keras.layers import Dense
 from keras.models import Model
+from keras import backend as kb
 
 from keras.preprocessing.image import ImageDataGenerator
+
+
+def recall_m(y_true, y_pred):
+    true_positives = kb.sum(kb.round(kb.clip(y_true * y_pred, 0, 1)))
+    possible_positives = kb.sum(kb.round(kb.clip(y_true, 0, 1)))
+    recall = true_positives / (possible_positives + kb.epsilon())
+    return recall
+
+
+def precision_m(y_true, y_pred):
+    true_positives = kb.sum(kb.round(kb.clip(y_true * y_pred, 0, 1)))
+    predicted_positives = kb.sum(kb.round(kb.clip(y_pred, 0, 1)))
+    precision = true_positives / (predicted_positives + kb.epsilon())
+    return precision
+
+
+def f1_m(y_true, y_pred):
+    precision = precision_m(y_true, y_pred)
+    recall = recall_m(y_true, y_pred)
+    return 2*((precision * recall) / (precision + recall + kb.epsilon()))
 
 
 class TrainModels:
@@ -88,7 +109,7 @@ class TrainModels:
         self.get_n_classes()
 
         # turn logging on
-        logging.basicConfig(filename=self.__log_file_name, level=logging.INFO)
+        logging.basicConfig(filename=self._log_file_name, level=logging.INFO)
 
     def set_path_to_data(
         self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
@@ -208,7 +229,7 @@ class TrainModels:
 
         self.model.compile(optimizer=Adam(learning_rate=learning_rate),
                            loss="categorical_crossentropy",
-                           metrics=["accuracy"])
+                           metrics=["accuracy", f1_m, precision_m, recall_m])
         return True
 
     def fit(self):
