@@ -49,8 +49,8 @@ class TrainModels:
 
     _random_seed = None
     _file_extension = "jpg"
+    _log_file_name = None
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
-    __log_file_name = "log.out"
     __batch_size_max = 30
     __batch_size_min = 10
     _n_dense_layers_for_new_head = 1
@@ -73,7 +73,8 @@ class TrainModels:
         path_to_save_models: Union[str, pl.Path] = None,
         verbose: bool = False,
         file_extension: str = "jpg",
-        color_mode: str = "RGB"
+        color_mode: str = "RGB",
+        log_file_name: str = "log"
     ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
@@ -81,6 +82,7 @@ class TrainModels:
         self._random_seed = random_seed
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
+        self._log_file_name = log_file_name + ".txt"
 
         # set classes
         self.get_n_classes()
