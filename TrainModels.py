@@ -36,6 +36,7 @@ from keras.applications import (
 
 from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
+from keras.callbacks import EarlyStopping
 from keras.layers import Dense
 from keras.models import Model
 from keras import backend as kb
@@ -242,8 +243,10 @@ class TrainModels:
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
-            verbose=self.verbose
+            verbose=self.verbose,
+            callbacks=EarlyStopping(monitor="val_loss", patience=2, restore_best_weights=True, verbose=self.verbose)
         )
+
         self.training_history = pd.DataFrame(history.history)
         logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
@@ -383,7 +386,7 @@ class TrainModels:
         # compile model
         self._compile_model()
         return self.model
-
+    
 
 if __name__ == "__main__":
     path_to_data_folder = pl.Path("Data")
