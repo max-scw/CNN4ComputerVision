@@ -157,7 +157,7 @@ class TrainModels:
         args = {"directory": self.paths[key],
                 "target_size": self.img_size,
                 "color_mode": self.color_mode,
-                "class_mode": "categorical",
+                "class_mode": None if key[0].upper() == 'V' else "categorical",
                 "batch_size": self.get_batch_size(key)
                 }
 
@@ -224,9 +224,10 @@ class TrainModels:
     def _compile_model(self) -> bool:
         # default constant learning rate for Adam: 0.001 = 1e-3
         if self.model_pretrained:
-            learning_rate = ExponentialDecay(initial_learning_rate=1e-3, decay_steps=5000, decay_rate=0.9)
+            learning_rate = ExponentialDecay(initial_learning_rate=1e-3, decay_steps=50, decay_rate=0.94)
         else:
-            learning_rate = PiecewiseConstantDecay(boundaries=[50, 500, 1500], values=[1e-2, 1e-3, 1e-4, 1e-5])
+            learning_rate = PiecewiseConstantDecay(boundaries=[50, 250, 800], values=[0.045, 5e-3, 5e-4, 5e-5])
+            # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
 
         self.model.compile(optimizer=Adam(learning_rate=learning_rate),
                            loss="categorical_crossentropy",
@@ -386,7 +387,7 @@ class TrainModels:
         # compile model
         self._compile_model()
         return self.model
-    
+
 
 if __name__ == "__main__":
     path_to_data_folder = pl.Path("Data")
