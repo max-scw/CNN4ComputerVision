@@ -229,8 +229,8 @@ class TrainModels:
             if self.model_pretrained:
                 self.learning_rate = ExponentialDecay(initial_learning_rate=4e-3, decay_steps=20, decay_rate=0.94)
             else:
-                self.learning_rate = PiecewiseConstantDecay(boundaries=[5, 15, 50, 500, 5000],
-                                                            values=[5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 5e-5])
+                self.learning_rate = PiecewiseConstantDecay(boundaries=[25, 75],
+                                                            values=[0.01, 0.005, 0.001])
                 # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
 
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate),
@@ -259,10 +259,10 @@ class TrainModels:
         self.training_history = pd.DataFrame(history.history)
         logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
-    
+
     def __callbacks(self) -> list:
         callbacks = [EarlyStopping(monitor="loss", patience=25, restore_best_weights=True, verbose=self.verbose)]
-        
+
         if self.use_model_checkpoints:
             path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
             path_model_checkpoints.mkdir()
