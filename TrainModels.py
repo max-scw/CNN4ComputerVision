@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -224,9 +223,9 @@ class TrainModels:
     def _compile_model(self) -> bool:
         # default constant learning rate for Adam: 0.001 = 1e-3
         if self.model_pretrained:
-            learning_rate = ExponentialDecay(initial_learning_rate=1e-3, decay_steps=50, decay_rate=0.94)
+            learning_rate = ExponentialDecay(initial_learning_rate=2e-3, decay_steps=20, decay_rate=0.94)
         else:
-            learning_rate = PiecewiseConstantDecay(boundaries=[50, 250, 800], values=[0.045, 5e-3, 5e-4, 5e-5])
+            learning_rate = PiecewiseConstantDecay(boundaries=[10, 250, 800], values=[0.045, 1e-3, 5e-4, 5e-5])
             # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
 
         self.model.compile(optimizer=Adam(learning_rate=learning_rate),
@@ -245,7 +244,7 @@ class TrainModels:
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
-            callbacks=EarlyStopping(monitor="val_loss", patience=2, restore_best_weights=True, verbose=self.verbose)
+            callbacks=EarlyStopping(monitor="loss", patience=5, restore_best_weights=True, verbose=self.verbose)
         )
 
         self.training_history = pd.DataFrame(history.history)
