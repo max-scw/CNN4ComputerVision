@@ -35,7 +35,7 @@ from keras.applications import (
 
 from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
-from keras.callbacks import EarlyStopping
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import Dense
 from keras.models import Model
 from keras import backend as kb
@@ -83,6 +83,7 @@ class TrainModels:
     verbose = False
     training_history = None
     learning_rate = None
+    use_model_checkpoints = False
 
     model_pretrained = False
     model_name = None
@@ -95,8 +96,8 @@ class TrainModels:
             path_to_save_models: Union[str, pl.Path] = None,
             verbose: bool = False,
             file_extension: str = "jpg",
-            color_mode: str = "RGB",
             log_file_name: str = "log",
+            use_model_checkpoints: bool = False
     ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
@@ -105,6 +106,7 @@ class TrainModels:
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
         self._log_file_name = log_file_name + ".txt"
+        self.use_model_checkpoints = use_model_checkpoints
 
         # set classes
         self.get_n_classes()
@@ -230,7 +232,7 @@ class TrainModels:
                 self.learning_rate = PiecewiseConstantDecay(boundaries=[5, 15, 50, 500, 5000],
                                                             values=[5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 5e-5])
                 # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
-        # learning_rate=0.001
+
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate),
                            loss="categorical_crossentropy",
                            metrics=["accuracy", f1_m, precision_m, recall_m])
@@ -245,17 +247,30 @@ class TrainModels:
         # start training
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
         print(f"Training {self.model_name} for {self.epochs} epochs")
+
         history = self.model.fit(
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
-            callbacks=EarlyStopping(monitor="loss", patience=25, restore_best_weights=True, verbose=self.verbose)
+            callbacks=self.__callbacks()
         )
 
         self.training_history = pd.DataFrame(history.history)
         logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
+    
+    def __callbacks(self) -> list:
+        callbacks = [EarlyStopping(monitor="loss", patience=25, restore_best_weights=True, verbose=self.verbose)]
+        
+        if self.use_model_checkpoints:
+            path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
+            path_model_checkpoints.mkdir()
+            callbacks += ModelCheckpoint(filepath=path_model_checkpoints,
+                                                   monitor='val_loss',
+                                                   mode='min',
+                                                   save_best_only=True)
+
 
     def analyze(self, model_name: str, learning_rate: Union[float, ExponentialDecay, PiecewiseConstantDecay] = None) -> Model:
         # set learning rate
