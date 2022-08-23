@@ -60,7 +60,7 @@ def precision_m(y_true, y_pred):
 def f1_m(y_true, y_pred):
     precision = precision_m(y_true, y_pred)
     recall = recall_m(y_true, y_pred)
-    return 2*((precision * recall) / (precision + recall + kb.epsilon()))
+    return 2 * ((precision * recall) / (precision + recall + kb.epsilon()))
 
 
 class TrainModels:
@@ -82,20 +82,21 @@ class TrainModels:
     epochs = None
     verbose = False
     training_history = None
+    learning_rate = None
 
     model_pretrained = False
     model_name = None
 
     def __init__(
-        self,
-        path_to_data: Union[pl.Path, str],
-        epochs: int,
-        random_seed: int = 42,
-        path_to_save_models: Union[str, pl.Path] = None,
-        verbose: bool = False,
-        file_extension: str = "jpg",
-        color_mode: str = "RGB",
-        log_file_name: str = "log"
+            self,
+            path_to_data: Union[pl.Path, str],
+            epochs: int,
+            random_seed: int = 42,
+            path_to_save_models: Union[str, pl.Path] = None,
+            verbose: bool = False,
+            file_extension: str = "jpg",
+            color_mode: str = "RGB",
+            log_file_name: str = "log",
     ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
@@ -112,7 +113,7 @@ class TrainModels:
         logging.basicConfig(filename=self._log_file_name, level=logging.INFO)
 
     def set_path_to_data(
-        self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
+            self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
     ) -> bool:
         # TODO: check for correct folder structure!
         self._path_to_data = pl.Path(path_to_data)
@@ -221,16 +222,21 @@ class TrainModels:
 
     # ----- Models
     def _compile_model(self) -> bool:
-        # default constant learning rate for Adam: 0.001 = 1e-3
-        if self.model_pretrained:
-            learning_rate = ExponentialDecay(initial_learning_rate=2e-3, decay_steps=20, decay_rate=0.94)
-        else:
-            learning_rate = PiecewiseConstantDecay(boundaries=[10, 250, 800], values=[0.045, 1e-3, 5e-4, 5e-5])
-            # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
-
-        self.model.compile(optimizer=Adam(learning_rate=learning_rate),
+        if self.learning_rate is None:
+            # default constant learning rate for Adam: 0.001 = 1e-3
+            if self.model_pretrained:
+                self.learning_rate = ExponentialDecay(initial_learning_rate=4e-3, decay_steps=20, decay_rate=0.94)
+            else:
+                self.learning_rate = PiecewiseConstantDecay(boundaries=[5, 15, 50, 500, 5000],
+                                                            values=[5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 5e-5])
+                # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
+        # learning_rate=0.001
+        self.model.compile(optimizer=Adam(learning_rate=self.learning_rate),
                            loss="categorical_crossentropy",
                            metrics=["accuracy", f1_m, precision_m, recall_m])
+
+        logging.info(
+            f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}")
         return True
 
     def fit(self):
@@ -244,14 +250,16 @@ class TrainModels:
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
-            callbacks=EarlyStopping(monitor="loss", patience=5, restore_best_weights=True, verbose=self.verbose)
+            callbacks=EarlyStopping(monitor="loss", patience=25, restore_best_weights=True, verbose=self.verbose)
         )
 
         self.training_history = pd.DataFrame(history.history)
         logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
 
-    def analyze(self, model_name: str) -> Model:
+    def analyze(self, model_name: str, learning_rate: Union[float, ExponentialDecay, PiecewiseConstantDecay] = None) -> Model:
+        # set learning rate
+        self.learning_rate = learning_rate
         # set model
         self.set_model(model_name)
         # train model
@@ -263,10 +271,10 @@ class TrainModels:
     def _save_model(self) -> bool:
         if "models" in self.paths and self.paths["models"]:
             # create file name
-            date_str = datetime.now().strftime(format="%y%m%d")
+            date_str = datetime.now().strftime(format="%y%m%d%H%M")
             file_name = f"{date_str}_{self.model_name}_{self.color_mode}"
             if self.model_pretrained:
-                file_name += "-pretrained" # TODO: make optional to train on what weights
+                file_name += "-pretrained"  # TODO: make optional to train on what weights
             # build file path
             file_path = self.paths["models"].joinpath(file_name + ".h5")
             # save model to file
