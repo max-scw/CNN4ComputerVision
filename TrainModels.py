@@ -14,6 +14,9 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from keras.applications import (
+    DenseNet121,
+    DenseNet169,
+    DenseNet201,
     InceptionV3,
     InceptionResNetV2,
     MobileNet,
@@ -185,6 +188,7 @@ class TrainModels:
                 vertical_flip=True,
                 horizontal_flip=True,
                 brightness_range=[0.2, 2.0],
+                interpolation="bilinear" if else "bicubic", # FIXME: if enlarge use bicubic => TODO add new variable self.target_size vs self.image_size
                 preprocessing_function=lambda x: preproc(x, self.color_mode),
                 zoom_range=[0.9, 1.1],
             ).flow_from_directory(
@@ -354,8 +358,16 @@ class TrainModels:
             self.color_mode = "RGB".lower()
 
         args = self._general_model_parameters()
-
-        if re.match("Inception((V3)|(ResNetV2))", model_name):
+        if re.match("DenseNet\d", model_name):
+            # DenseNet121, DenseNet169, DenseNet201
+            
+            if self._match_model_name("DenseNet121", model_name):
+                self.model = DenseNet121(**args)
+            elif self._match_model_name("DenseNet169", model_name):
+                self.model = DenseNet169(**args)
+            elif self._match_model_name("DenseNet201", model_name):
+                self.model = DenseNet201(**args)
+        elif re.match("Inception((V3)|(ResNetV2))", model_name):
             # InceptionV3, InceptionResNetV2
 
             if self._match_model_name("InceptionV3", model_name):
