@@ -41,29 +41,10 @@ from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, 
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import Dense
 from keras.models import Model
+from keras.metrics import Recall, Precision
 from keras import backend as kb
 
 from keras.preprocessing.image import ImageDataGenerator
-
-
-def recall_m(y_true, y_pred):
-    true_positives = kb.sum(kb.round(kb.clip(y_true * y_pred, 0, 1)))
-    possible_positives = kb.sum(kb.round(kb.clip(y_true, 0, 1)))
-    recall = true_positives / (possible_positives + kb.epsilon())
-    return recall
-
-
-def precision_m(y_true, y_pred):
-    true_positives = kb.sum(kb.round(kb.clip(y_true * y_pred, 0, 1)))
-    predicted_positives = kb.sum(kb.round(kb.clip(y_pred, 0, 1)))
-    precision = true_positives / (predicted_positives + kb.epsilon())
-    return precision
-
-
-def f1_m(y_true, y_pred):
-    precision = precision_m(y_true, y_pred)
-    recall = recall_m(y_true, y_pred)
-    return 2 * ((precision * recall) / (precision + recall + kb.epsilon()))
 
 
 class TrainModels:
@@ -75,7 +56,7 @@ class TrainModels:
     _file_extension = "jpg"
     _log_file_name = None
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
-    __batch_size_max = 30
+    __batch_size_max = 64
     __batch_size_min = 10
     _n_dense_layers_for_new_head = 1
 
@@ -142,32 +123,41 @@ class TrainModels:
         # return number of classes
         return self.n_classes
 
+    @property
     def get_image_size(self) -> Tuple:
-        if self.img_size is None:
-            p2file = None
-            # find all images
-            for p2file in self._path_to_data.glob("**/*" + self._file_extension):
-                if p2file:
-                    break
-            # read image
+        p2file = None
+        # find all images
+        for p2file in self._path_to_data.glob("**/*" + self._file_extension):
             if p2file:
-                img = Image.open(p2file)
-                self.img_size = img.size
-            else:
-                raise ValueError("No images found to infer the images size from.")
+                break
+        # read image
+        if p2file:
+            img = Image.open(p2file)
+            self.img_size = img.size
+        else:
+            raise ValueError("No images found to infer the images size from.")
         # return image size
         return self.img_size
 
+    def get_target_size(self) -> Tuple:
+        if self.model_pretrained:
+            target_size = (224, 224)
+        else:
+            target_size = self.get_image_size
+
+        return target_size
+
     def get_data_generator(self, key: str):
         args = {"directory": self.paths[key],
-                "target_size": self.img_size,
+                "target_size": self.get_target_size(),
                 "color_mode": self.color_mode,
-                "class_mode": None if key[0].upper() == 'V' else "categorical",
+                # "class_mode": None if key[0].upper() == 'V' else "categorical",
+                "class_mode": "categorical",
                 "batch_size": self.get_batch_size(key)
                 }
 
         def add_noise(img: np.ndarray) -> np.ndarray:
-            deviation = 50 * random.random()  # variability = 50
+            deviation = 42 * random.random()  # variability = 42
             noise = np.random.normal(0, deviation, img.shape)
             img += noise
             np.clip(img, 0.0, 255.0)
@@ -182,13 +172,12 @@ class TrainModels:
         if re.match("train(ing)?", key, re.IGNORECASE):
             gen = ImageDataGenerator(
                 rescale=1.0 / 255,
-                width_shift_range=[-0.2, 0.2],
-                height_shift_range=[-0.2, 0.2],
+                width_shift_range=[-0.1, 0.1],
+                height_shift_range=[-0.1, 0.1],
                 rotation_range=10,
                 vertical_flip=True,
                 horizontal_flip=True,
                 brightness_range=[0.2, 2.0],
-                interpolation="bilinear" if else "bicubic", # FIXME: if enlarge use bicubic => TODO add new variable self.target_size vs self.image_size
                 preprocessing_function=lambda x: preproc(x, self.color_mode),
                 zoom_range=[0.9, 1.1],
             ).flow_from_directory(
@@ -231,15 +220,15 @@ class TrainModels:
         if self.learning_rate is None:
             # default constant learning rate for Adam: 0.001 = 1e-3
             if self.model_pretrained:
-                self.learning_rate = ExponentialDecay(initial_learning_rate=4e-3, decay_steps=20, decay_rate=0.94)
+                self.learning_rate = 1e-4
             else:
-                self.learning_rate = PiecewiseConstantDecay(boundaries=[25, 75],
-                                                            values=[0.01, 0.005, 0.001])
+                self.learning_rate = PiecewiseConstantDecay(boundaries=[50, 2000],
+                                                            values=[0.005, 0.001, 0.0001])
                 # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
 
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate),
                            loss="categorical_crossentropy",
-                           metrics=["accuracy", f1_m, precision_m, recall_m])
+                           metrics=["accuracy", "Precision", "Recall", "AUC"])
 
         logging.info(
             f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}")
@@ -252,12 +241,17 @@ class TrainModels:
         logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
         print(f"Training {self.model_name} for {self.epochs} epochs")
 
+        assert self.model.output.shape[1] == self.get_n_classes()
+
         history = self.model.fit(
             x=self.get_data_generator("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
-            callbacks=self.__callbacks()
+            callbacks=self.__callbacks(),
+            workers=2,
+            validation_data=self.get_data_generator("validation"),
+            validation_batch_size=self.get_batch_size("validation")
         )
 
         self.training_history = pd.DataFrame(history.history)
@@ -265,16 +259,15 @@ class TrainModels:
         return self.model
 
     def __callbacks(self) -> list:
-        callbacks = [EarlyStopping(monitor="loss", patience=25, restore_best_weights=True, verbose=self.verbose)]
+        callbacks = [EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=self.verbose)]
 
         if self.use_model_checkpoints:
             path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
             path_model_checkpoints.mkdir()
             callbacks += ModelCheckpoint(filepath=path_model_checkpoints,
-                                                   monitor='val_loss',
-                                                   mode='min',
-                                                   save_best_only=True)
-
+                                         monitor='val_loss',
+                                         mode='min',
+                                         save_best_only=True)
 
     def analyze(self, model_name: str, learning_rate: Union[float, ExponentialDecay, PiecewiseConstantDecay] = None) -> Model:
         # set learning rate
@@ -329,9 +322,9 @@ class TrainModels:
 
         # input shape
         if re.match("RGB", self.color_mode, re.IGNORECASE):
-            args["input_shape"] = self.get_image_size() + (3,)
+            args["input_shape"] = self.get_target_size() + (3,)
         else:  # color_mode == grayscale
-            args["input_shape"] = self.get_image_size() + (1,)
+            args["input_shape"] = self.get_target_size() + (1,)
 
         logging.info(f"{datetime.now()}: Parameters for training: {args}.")
         return args
@@ -358,9 +351,10 @@ class TrainModels:
             self.color_mode = "RGB".lower()
 
         args = self._general_model_parameters()
+
         if re.match("DenseNet\d", model_name):
             # DenseNet121, DenseNet169, DenseNet201
-            
+
             if self._match_model_name("DenseNet121", model_name):
                 self.model = DenseNet121(**args)
             elif self._match_model_name("DenseNet169", model_name):
@@ -377,14 +371,14 @@ class TrainModels:
         elif re.match("MobileNet(V[23])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
-            if self._match_model_name("MobileNet", model_name):
-                self.model = MobileNet(**args)
-            elif self._match_model_name("MobileNetV2", model_name):
+            if self._match_model_name("MobileNetV2", model_name):
                 self.model = MobileNetV2(**args)
             elif self._match_model_name("MobileNetV3Small", model_name):
                 self.model = MobileNetV3Small(**args)
             elif self._match_model_name("MobileNetV3Large", model_name):
                 self.model = MobileNetV3Large(**args)
+            elif self._match_model_name("MobileNet", model_name):
+                self.model = MobileNet(**args)
         elif re.match("ResNet((50)|(101)|(152))(V2)?", model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
@@ -424,7 +418,7 @@ class TrainModels:
 
 
 if __name__ == "__main__":
-    path_to_data_folder = pl.Path("Data")
+    path_to_data_folder = pl.Path("Data_RGB_withBox")
     path_to_save_models = pl.Path("Models")
 
     models_to_analyze = ["InceptionV3",
