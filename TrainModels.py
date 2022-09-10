@@ -13,6 +13,7 @@ import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+# https://keras.io/api/applications/
 from keras.applications import (
     DenseNet121,
     DenseNet169,
@@ -34,17 +35,35 @@ from keras.applications import (
     Xception
 )
 
-# https://keras.io/api/applications/
-
 from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, Callback
 from keras.layers import Dense
-from keras.models import Model
-from keras.metrics import Recall, Precision
-from keras import backend as kb
+from keras.models import Model, load_model
+from keras.metrics import TruePositives, FalsePositives, TrueNegatives, FalseNegatives
 
 from keras.preprocessing.image import ImageDataGenerator
+
+
+class StayAliveLoggingCallback(Callback):
+    _log_file_name = None
+    _log_epoch_step = 1
+    _external_info = ""
+
+    def __init__(self, log_file_name: str = None, epoch_step: int = 1, info: str = ""):
+        super().__init__()
+        self._log_file_name = log_file_name
+        self._log_epoch_step = epoch_step
+        self._external_info = info
+
+        # turn logging o
+        if self._log_file_name:
+            logging.basicConfig(filename=self._log_file_name, level=logging.INFO)
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self._log_file_name and (epoch % self._log_epoch_step) == 0:
+            logging.info(f"{datetime.now()} {self._external_info}, epoch {epoch}: "
+                         f"loss {round(logs['loss'], 3)}, accuracy {round(logs['accuracy'], 3)}.")
 
 
 class TrainModels:
@@ -59,6 +78,7 @@ class TrainModels:
     __batch_size_max = 64
     __batch_size_min = 10
     _n_dense_layers_for_new_head = 1
+    _stay_alive_logging_step = 50
 
     n_classes = None
     img_size = None
@@ -189,6 +209,25 @@ class TrainModels:
             gen = ImageDataGenerator(rescale=1.0 / 255).flow_from_directory(**args)
         return gen
 
+    def get_data_generator_labels(self, key: str = "training", as_int: bool = True) -> list:
+        gen = self.get_data_generator(key)
+
+        gen.reset()
+        y_act = []
+        for i in range(int(len(gen.classes) / gen.batch_size)):
+            _, y = gen.next()
+            y_act += np.argmax(y, axis=1).tolist()
+
+        if not as_int:
+            y_act_names = []
+            for el in y_act:
+                for key, val in gen.class_indices.items():
+                    if el == val:
+                        break
+                y_act_names.append(key)
+            y_act = y_act_names
+        return y_act
+
     def get_batch_size(self, key: str) -> int:
         n_files = self.get_n_files(key)
 
@@ -222,13 +261,20 @@ class TrainModels:
             if self.model_pretrained:
                 self.learning_rate = 1e-4
             else:
-                self.learning_rate = PiecewiseConstantDecay(boundaries=[50, 2000],
-                                                            values=[0.005, 0.001, 0.0001])
+                self.learning_rate = PiecewiseConstantDecay(boundaries=[50, 250, 1000],
+                                                            values=[0.005, 0.001, 0.0005, 0.0001])
                 # learning_rage = ExponentialDecay(initial_learning_rate=0.045, decay_steps=20, decay_rate=0.94)
 
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate),
                            loss="categorical_crossentropy",
-                           metrics=["accuracy", "Precision", "Recall", "AUC"])
+                           metrics=["accuracy", 
+                                    "Precision", 
+                                    "Recall", 
+                                    "AUC", 
+                                    TruePositives(name='tp'), 
+                                    FalsePositives(name='fp'), 
+                                    TrueNegatives(name='tn'), 
+                                    FalseNegatives(name='fn'),])
 
         logging.info(
             f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}")
@@ -259,7 +305,13 @@ class TrainModels:
         return self.model
 
     def __callbacks(self) -> list:
-        callbacks = [EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=self.verbose)]
+        callbacks = [EarlyStopping(monitor="val_loss",
+                                   patience=100,
+                                   restore_best_weights=True,
+                                   verbose=self.verbose),
+                     StayAliveLoggingCallback(log_file_name=self._log_file_name,
+                                              epoch_step=self._stay_alive_logging_step,
+                                              info=self.__get_model_name())]
 
         if self.use_model_checkpoints:
             path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
@@ -268,6 +320,7 @@ class TrainModels:
                                          monitor='val_loss',
                                          mode='min',
                                          save_best_only=True)
+        return callbacks
 
     def analyze(self, model_name: str, learning_rate: Union[float, ExponentialDecay, PiecewiseConstantDecay] = None) -> Model:
         # set learning rate
@@ -280,13 +333,17 @@ class TrainModels:
         self._save_model()
         return self.model
 
+    def __get_model_name(self) -> str:
+        file_name = f"{self.model_name}_{self.color_mode}"
+        if self.model_pretrained:
+            file_name += "-pretrained"  # TODO: make optional to train on what weights
+        return file_name
+
     def _save_model(self) -> bool:
         if "models" in self.paths and self.paths["models"]:
             # create file name
             date_str = datetime.now().strftime(format="%y%m%d%H%M")
-            file_name = f"{date_str}_{self.model_name}_{self.color_mode}"
-            if self.model_pretrained:
-                file_name += "-pretrained"  # TODO: make optional to train on what weights
+            file_name = f"{date_str}_{self.__get_model_name()}"
             # build file path
             file_path = self.paths["models"].joinpath(file_name + ".h5")
             # save model to file
@@ -329,7 +386,7 @@ class TrainModels:
         logging.info(f"{datetime.now()}: Parameters for training: {args}.")
         return args
 
-    def _match_model_name(self, model_name: str, input: str) -> bool:
+    def __match_model_name(self, model_name: str, input: str) -> bool:
         if re.match(model_name, input, re.IGNORECASE):
             self.model_name = model_name
             return True
@@ -355,53 +412,53 @@ class TrainModels:
         if re.match("DenseNet\d", model_name):
             # DenseNet121, DenseNet169, DenseNet201
 
-            if self._match_model_name("DenseNet121", model_name):
+            if self.__match_model_name("DenseNet121", model_name):
                 self.model = DenseNet121(**args)
-            elif self._match_model_name("DenseNet169", model_name):
+            elif self.__match_model_name("DenseNet169", model_name):
                 self.model = DenseNet169(**args)
-            elif self._match_model_name("DenseNet201", model_name):
+            elif self.__match_model_name("DenseNet201", model_name):
                 self.model = DenseNet201(**args)
         elif re.match("Inception((V3)|(ResNetV2))", model_name):
             # InceptionV3, InceptionResNetV2
 
-            if self._match_model_name("InceptionV3", model_name):
+            if self.__match_model_name("InceptionV3", model_name):
                 self.model = InceptionV3(**args)
-            elif self._match_model_name("InceptionResNetV2", model_name):
+            elif self.__match_model_name("InceptionResNetV2", model_name):
                 self.model = InceptionResNetV2(**args)
         elif re.match("MobileNet(V[23])?((Small)|(Large))?", model_name):
             # MobileNet, MobileNetV2, MobileNetV3Small, MobileNetV3Large
 
-            if self._match_model_name("MobileNetV2", model_name):
+            if self.__match_model_name("MobileNetV2", model_name):
                 self.model = MobileNetV2(**args)
-            elif self._match_model_name("MobileNetV3Small", model_name):
+            elif self.__match_model_name("MobileNetV3Small", model_name):
                 self.model = MobileNetV3Small(**args)
-            elif self._match_model_name("MobileNetV3Large", model_name):
+            elif self.__match_model_name("MobileNetV3Large", model_name):
                 self.model = MobileNetV3Large(**args)
-            elif self._match_model_name("MobileNet", model_name):
+            elif self.__match_model_name("MobileNet", model_name):
                 self.model = MobileNet(**args)
         elif re.match("ResNet((50)|(101)|(152))(V2)?", model_name):
             # ResNet50, ResNet101, ResNet152, ResNet50V2, ResNet101V2, ResNet152V2
 
-            if self._match_model_name("ResNet50", model_name):
+            if self.__match_model_name("ResNet50", model_name):
                 self.model = ResNet50(**args)
-            elif self._match_model_name("ResNet101", model_name):
+            elif self.__match_model_name("ResNet101", model_name):
                 self.model = ResNet101(**args)
-            elif self._match_model_name("ResNet152", model_name):
+            elif self.__match_model_name("ResNet152", model_name):
                 self.model = ResNet152(**args)
-            elif self._match_model_name("ResNet50V2", model_name):
+            elif self.__match_model_name("ResNet50V2", model_name):
                 self.model = ResNet50V2(**args)
-            elif self._match_model_name("ResNet101V2", model_name):
+            elif self.__match_model_name("ResNet101V2", model_name):
                 self.model = ResNet101V2(**args)
-            elif self._match_model_name("ResNet152V2", model_name):
+            elif self.__match_model_name("ResNet152V2", model_name):
                 self.model = ResNet152V2(**args)
         elif re.match("VGG((16)|(19))", model_name):
             # VGG16, VGG19
 
-            if self._match_model_name("VGG16", model_name):
+            if self.__match_model_name("VGG16", model_name):
                 self.model = VGG16(**args)
-            elif self._match_model_name("VGG19", model_name):
+            elif self.__match_model_name("VGG19", model_name):
                 self.model = VGG19(**args)
-        elif self._match_model_name("Xception", model_name):
+        elif self.__match_model_name("Xception", model_name):
             # Xception
 
             self.model = Xception(**args)
@@ -416,31 +473,34 @@ class TrainModels:
         self._compile_model()
         return self.model
 
+    def predict(self, key: str = "test"):
+        # for p2mdl in self.paths["models"].glob("*.h5"):
+        #     model = load_model(p2mdl)
+
+        gen = self.get_data_generator(key)
+
+        y_prd_softmax = self.model.predict(x=gen,
+                                           batch_size=self.get_batch_size(key),
+                                           verbose=self.verbose
+                                           )
+
+        y_prd = np.argmax(y_prd_softmax, axis=1)
+        y_act = gen.classes
+        return pd.Series(y_prd, name="y_prd"), pd.Series(y_act, name="y_act")
+
 
 if __name__ == "__main__":
-    path_to_data_folder = pl.Path("Data_RGB_withBox")
+    path_to_data_folder = pl.Path("Data_RGB")
     path_to_save_models = pl.Path("Models")
 
-    models_to_analyze = ["InceptionV3",
-                         "InceptionResNetV2",
-                         "MobileNet",
-                         "MobileNetV2",
-                         "MobileNetV3Small",
-                         "MobileNetV3Large",
-                         "ResNet50",
-                         "ResNet101",
-                         "ResNet152",
-                         "ResNet50V2",
-                         "ResNet101V2",
-                         "ResNet152V2",
-                         "VGG16",
-                         "VGG19",
-                         "Xception"]
     # TODO: [el + '-pretrained' for el in models_to_analyze]
     # TODO: [el + '-grayscale' for el in models_to_analyze]
-    models_to_analyze = ["MobileNetV2-grayscaled", "MobileNetV2-pretrained"]
+    models_to_analyze = ["MobileNetV2-grayscaled"]
 
-    train = TrainModels(path_to_data_folder, epochs=2, verbose=True, path_to_save_models=path_to_save_models)
+    train = TrainModels(path_to_data_folder,
+                        epochs=2,
+                        verbose=True,
+                        log_file_name="TestLog")
     for mdl in models_to_analyze:
         train.analyze(mdl)
     print('done.')
