@@ -89,8 +89,10 @@ class TrainModels:
     learning_rate = None
     use_model_checkpoints = False
 
-    model_pretrained = False
     model_name = None
+    model_pretrained = False
+    model_finetune = False
+    
 
     def __init__(
             self,
@@ -255,11 +257,13 @@ class TrainModels:
         return int(np.floor(self.get_n_files(key) / self.get_batch_size(key)))
 
     # ----- Models
-    def _compile_model(self) -> bool:
+    def _compile_model(self, finetune: bool = False) -> bool:
         if self.learning_rate is None:
             # default constant learning rate for Adam: 0.001 = 1e-3
-            if self.model_pretrained:
-                self.learning_rate = 1e-4
+            if finetune:
+                self.learning_rate = ExponentialDecay(initial_learning_rate=1e-4, decay_steps=20, decay_rate=0.9)
+            elif self.model_pretrained:
+                self.learning_rate = 1e-3
             else:
                 self.learning_rate = PiecewiseConstantDecay(boundaries=[50, 250, 1000],
                                                             values=[0.005, 0.001, 0.0005, 0.0001])
@@ -274,18 +278,27 @@ class TrainModels:
                                     TruePositives(name='tp'), 
                                     FalsePositives(name='fp'), 
                                     TrueNegatives(name='tn'), 
-                                    FalseNegatives(name='fn'),])
+                                    FalseNegatives(name='fn')])
 
         logging.info(
-            f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}")
+            f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}"
+            )
         return True
 
     def fit(self):
+        self._compile_model()
+        model = self._fit()
+        if self.model_finetune:
+            self.model.trainable = True
+            self._compile_model(finetune=True)
+            model = self._fit()
+        return model
+
+    def _fit(self):
         # set random seed | necessary for the nested function in the data generator which produces
         random.seed(self._random_seed)
         # start training
-        logging.info(f"{datetime.now()}: Start training {self.model_name} ...")
-        print(f"Training {self.model_name} for {self.epochs} epochs")
+        logging.info(f"{datetime.now()}: Start training {self.model_name} for {self.epochs} epochs ...")
 
         assert self.model.output.shape[1] == self.get_n_classes()
 
@@ -295,7 +308,6 @@ class TrainModels:
             epochs=self.epochs,
             verbose=self.verbose,
             callbacks=self.__callbacks(),
-            workers=2,
             validation_data=self.get_data_generator("validation"),
             validation_batch_size=self.get_batch_size("validation")
         )
@@ -303,15 +315,19 @@ class TrainModels:
         self.training_history = pd.DataFrame(history.history)
         logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
+    
 
     def __callbacks(self) -> list:
         callbacks = [EarlyStopping(monitor="val_loss",
                                    patience=100,
                                    restore_best_weights=True,
-                                   verbose=self.verbose),
+                                   verbose=self.verbose
+                                   ),
                      StayAliveLoggingCallback(log_file_name=self._log_file_name,
                                               epoch_step=self._stay_alive_logging_step,
-                                              info=self.__get_model_name())]
+                                              info=self.__get_model_name()
+                                              )
+                    ]
 
         if self.use_model_checkpoints:
             path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
@@ -337,6 +353,8 @@ class TrainModels:
         file_name = f"{self.model_name}_{self.color_mode}"
         if self.model_pretrained:
             file_name += "-pretrained"  # TODO: make optional to train on what weights
+        if self.model_finetune:
+            file_name += "-finetuned"
         return file_name
 
     def _save_model(self) -> bool:
@@ -393,14 +411,21 @@ class TrainModels:
         return False
 
     def set_model(self, model_name: str) -> Model:
+        pattern_add = r"[,_\s\-\.\+\\\|]"
         # set flag for using pretrained weights
-        if re.search(r"[\s,-_\.]pretrain(ed)?", model_name, re.IGNORECASE):
+        if re.search(pattern_add + "pretrain(ed)?", model_name, re.IGNORECASE):
             self.model_pretrained = True
+            # set flag for finetuninng (pretrained) weights
+            if re.search(pattern_add + "finetun(e|(ing))", model_name, re.IGNORECASE):
+                self.model_finetune = True
+            else:
+                self.model_finetune = False
         else:
             self.model_pretrained = False
 
+
         # set color mode
-        if re.search(r"[\s,-_\.]gray", model_name, re.IGNORECASE):
+        if re.search(pattern_add + "gray", model_name, re.IGNORECASE):
             self.color_mode = "grayscale"
             if self.model_pretrained:
                 raise ValueError('Cannot use grayscale images with pretrained weights.')
@@ -466,11 +491,9 @@ class TrainModels:
             raise ValueError(f"Unknown model architecture: {model_name}")
 
         if self.model_pretrained:
+            self.model.trainable = False
             self.__add_new_model_head()
-            self.model_name += "_pretrained"
 
-        # compile model
-        self._compile_model()
         return self.model
 
     def predict(self, key: str = "test"):
@@ -490,12 +513,12 @@ class TrainModels:
 
 
 if __name__ == "__main__":
-    path_to_data_folder = pl.Path("Data_RGB")
+    path_to_data_folder = pl.Path("Data")
     path_to_save_models = pl.Path("Models")
 
     # TODO: [el + '-pretrained' for el in models_to_analyze]
     # TODO: [el + '-grayscale' for el in models_to_analyze]
-    models_to_analyze = ["MobileNetV2-grayscaled"]
+    models_to_analyze = ["MobileNetV2-pretrained-finetune"]
 
     train = TrainModels(path_to_data_folder,
                         epochs=2,
