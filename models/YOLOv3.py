@@ -25,38 +25,54 @@ from keras.layers import (
 from keras.regularizers import l2
 
 
-def create_model(input_shape: Tuple[int, int], num_classes: int, anchors: Union[List[Tuple[int, int]], np.ndarray]):
-    K.clear_session()  # get a new session
-    image_input = Input(shape=(None, None, 3))
-    h, w = input_shape
-    num_anchors = len(anchors)
+class YOLOv3:
+    def __init__(
+        self, input_shape: Tuple[int, int], num_classes: int, anchors: Union[List[Tuple[int, int]], np.ndarray] = None
+    ) -> None:
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        if anchors is None:
+            """
+            We still use k-means clustering to determine our bounding box priors. We just sort of chose 9 clusters and 
+            3 scales arbitrarily and then divide up the clusters evenly across scales. On the COCO dataset the 9 
+            clusters were:
+            (10x13); (16x30); (33x23); (30x61); (62x45); (59x119); (116x90); (156x198); (373x326).
+            """
+            anchors = [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45), (59, 119), (116, 90), (156, 198), (373, 326)]
+        self.anchors = np.array(anchors).astype(float).reshape(-1, 2)
 
-    y_true = [
-        Input(
-            shape=(
-                h // {0: 32, 1: 16, 2: 8}[i],
-                w // {0: 32, 1: 16, 2: 8}[i],
-                num_anchors // 3,
-                num_classes + 5,
+    def create_model(self):
+        K.clear_session()  # get a new session
+        image_input = Input(shape=(None, None, 3))
+        h, w = self.input_shape
+        num_anchors = len(self.anchors)
+
+        y_true = [
+            Input(
+                shape=(
+                    h // {0: 32, 1: 16, 2: 8}[i],
+                    w // {0: 32, 1: 16, 2: 8}[i],
+                    num_anchors // 3,
+                    self.num_classes + 5,
+                )
             )
-        )
-        for i in range(3)
-    ]
+            for i in range(3)
+        ]
 
-    model_body = yolo_body(image_input, num_anchors // 3, num_classes)
-    print(f"Create YOLOv3 model with {num_anchors} anchors and {num_classes} classes.")
+        model_body = yolo_body(image_input, num_anchors // 3, self.num_classes)
+        print(f"Create YOLOv3 model with {num_anchors} anchors and {self.num_classes} classes.")
 
-    # TODO: if load_pretrained:
+        # TODO: if load_pretrained:
 
-    model_loss = Lambda(
-        yolo_loss,
-        output_shape=(1,),
-        name="yolo_loss",
-        arguments={"anchors": anchors, "num_classes": num_classes, "ignore_thresh": 0.5},
-    )([*model_body.output, *y_true])
-    model = Model([model_body.input, *y_true], model_loss)
+        model_loss = Lambda(
+            yolo_loss,
+            output_shape=(1,),
+            name="yolo_loss",
+            arguments={"anchors": self.anchors, "num_classes": self.num_classes, "ignore_thresh": 0.5},
+        )([*model_body.output, *y_true])
+        model = Model([model_body.input, *y_true], model_loss)
 
-    return model
+        return model
 
 
 def compose(*funcs):

@@ -131,3 +131,4 @@ dmypy.json
 Data/*
 Trained_Models/*
 log.txt
+TestLog.txt
