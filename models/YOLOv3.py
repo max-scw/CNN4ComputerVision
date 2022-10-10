@@ -470,14 +470,7 @@ def preprocess_true_boxes(
         box_wh_max = wh / 2.0
         box_wh_min = -box_wh_max
         # calculate intersection with anchor boxes
-        intersect_min = np.maximum(box_wh_min, anchor_min)
-        intersect_max = np.minimum(box_wh_max, anchor_max)
-        intersect_wh = np.maximum(intersect_max - intersect_min, 0.0)
-        # compare area of intersected boxes to the area of the original boxes => IOU = intersection over union
-        intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
-        box_area = wh[..., 0] * wh[..., 1]
-        anchor_area = anchors[..., 0] * anchors[..., 1]
-        iou = intersect_area / (box_area + anchor_area - intersect_area)
+        iou = calc_iou_between_boxes(box_wh_min, box_wh_max, wh, anchor_min, anchor_max, anchors)
 
         # Find best anchor for each true box
         best_anchor = np.argmax(iou, axis=-1)
@@ -501,6 +494,26 @@ def preprocess_true_boxes(
                     y_true[i_lyr][i_bsz, j, i, idx_anc, 4] = 1
                     y_true[i_lyr][i_bsz, j, i, idx_anc, 5 + class_id] = 1
     return y_true
+
+
+def calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh):
+    # calculate intersection with anchor boxes
+    if isinstance(b1_min, tf.Tensor):
+        intersect_min = K.maximum(b1_min, b2_min)
+        intersect_max = K.minimum(b1_max, b2_max)
+        intersect_wh = K.maximum(intersect_max - intersect_min, 0.0)
+    elif isinstance(b1_min, np.ndarray):
+        intersect_min = np.maximum(b1_min, b2_min)
+        intersect_max = np.minimum(b1_max, b2_max)
+        intersect_wh = np.maximum(intersect_max - intersect_min, 0.0)
+    else:
+        raise TypeError("Unknown input type.")
+    # compare area of intersected boxes to the area of the original boxes => IOU = intersection over union
+    intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
+    b1_area = b1_wh[..., 0] * b1_wh[..., 1]
+    b2_area = b2_wh[..., 0] * b2_wh[..., 1]
+    iou = intersect_area / (b1_area + b2_area - intersect_area)
+    return iou
 
 
 def box_iou(b1, b2):
@@ -528,21 +541,8 @@ def box_iou(b1, b2):
         b0_maxes = b0_xy + b0_wh_half
         return b0_mins, b0_maxes, b0_wh
 
-    # # Expand dim to apply broadcasting.
-    # wh = np.expand_dims(wh, -2)
-    # # shift width/height to max/min from center point
-    # box_wh_max = wh / 2.0
-    # box_wh_min = -box_wh_max
+    b1_min, b1_max, b1_wh = expand_dims_for_broadcasting(b1)
+    b2_min, b2_max, b2_wh = expand_dims_for_broadcasting(b2)
 
-    b1_mins, b1_maxes, b1_wh = expand_dims_for_broadcasting(b1)
-    b2_mins, b2_maxes, b2_wh = expand_dims_for_broadcasting(b2)
-
-    intersect_mins = K.maximum(b1_mins, b2_mins)
-    intersect_maxes = K.minimum(b1_maxes, b2_maxes)
-    intersect_wh = K.maximum(intersect_maxes - intersect_mins, 0.0)
-    intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
-    b1_area = b1_wh[..., 0] * b1_wh[..., 1]
-    b2_area = b2_wh[..., 0] * b2_wh[..., 1]
-    iou = intersect_area / (b1_area + b2_area - intersect_area)
-
+    iou = calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh)
     return iou
