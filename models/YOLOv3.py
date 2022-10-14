@@ -405,7 +405,7 @@ def make_last_layers(x, num_filters: int, out_filters):
 
 def preprocess_true_boxes(
     true_boxes: Union[List[list], np.ndarray],
-    input_shape: Union[List[list], np.ndarray],
+    input_shape: Union[List[list], np.ndarray, Tuple[int, int]],
     anchors: Union[List[list], np.ndarray],
     num_classes: int,
 ) -> List[np.ndarray]:
@@ -500,7 +500,6 @@ def preprocess_true_boxes(
 
 
 def calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh):
-    # print(f"b1_min {type(b1_min)}, b1_max {type(b1_max)}, b1_wh {type(b1_wh)}, b2_min {type(b2_min)}, b2_max {type(b2_max)}, b2_wh {type(b2_wh)}.")
     # calculate intersection with anchor boxes
     if isinstance(b1_min, tf.Tensor):
         intersect_min = K.maximum(b1_min, b2_min)
