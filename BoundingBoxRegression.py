@@ -8,7 +8,8 @@ import re
 from typing import Union, Tuple, List
 
 import albumentations as A
-from matplotlib import colors
+
+from utils import voith_colors
 
 
 class BBoxTransform:
@@ -40,7 +41,7 @@ class BBoxTransform:
                 break
         return flag
 
-    def __get_format_mode(self, input_string: str) -> Tuple[int, bool]:
+    def __get_format_mode(self, input_string: str) -> (int, bool):
         patterns_center_width = ["xywh", "yolo", "x0y0wh"]
         patterns_min_max = ["min_max", "pascal(_voc)?", "x_min, y_min, x_max, y_max", "xyxy", "x1y1x2y2",
                             r"min(\|-s)max", "corner", "albumentations"]
@@ -225,7 +226,7 @@ class BBoxTransform:
 def draw_single_bbox(image: Image.Image,
                      bbox,
                      bbox_format: str = "yolo",
-                     color="red"):
+                     color=voith_colors.loc["voith_cyan", "RGB"]):
     """Visualizes a single bounding box on the image"""
     xy_min_max = BBoxTransform().transform(bbox,
                                            format_to="coco",
@@ -252,7 +253,7 @@ def draw_bbox(image: Union[Image.Image, np.ndarray], bboxes, category_ids, bbox_
         image_copy = draw_single_bbox(image_copy,
                                       bbox,
                                       bbox_format=bbox_format,
-                                      color=list(colors.values())[category_id])
+                                      color=voith_colors.iloc[category_id]["RGB"])
     image_copy.show()
 
 
@@ -281,7 +282,7 @@ class ImageDataGenerator4BoundingBoxes:
                 path_to_annotation: Union[str, pl.Path] = None,
                 shuffle: bool = False,
                 random_seed: int = 42,
-                image_size: Tuple[int, int] = (244, 244),
+                target_size: Tuple[int, int] = (244, 244),
                 bbox_format: str = "yolo",
                 image_file_extension: str = "jpg",
                 batch_size: int = None,
@@ -295,7 +296,7 @@ class ImageDataGenerator4BoundingBoxes:
         self._random_seed = random_seed
         self._shuffle = shuffle
 
-        self.target_size = image_size
+        self.target_size = target_size
         self.batch_size = batch_size
         self.color_mode = color_mode
 
@@ -335,15 +336,16 @@ class ImageDataGenerator4BoundingBoxes:
         # --- geometry
         # A.RandomSizedCrop((512 - 100, 512 + 100), 512, 512),
         # A.CenterCrop(width=450, height=450)
-        trafo_fncs.append(A.RandomSizedBBoxSafeCrop(width=width, height=height, p=1))
+        trafo_fncs.append(A.RandomSizedBBoxSafeCrop(width=width, height=height, p=0.75))
         trafo_fncs.append(A.HorizontalFlip(p=0.5))
         trafo_fncs.append(A.VerticalFlip(p=0.5),)
         trafo_fncs.append(A.ShiftScaleRotate(scale_limit=0.1, rotate_limit=45, p=0.5))
-        trafo_fncs.append(A.RandomRotate90(p=0.2))
-        A.Resize(height=height, width=width, always_apply=True),
+        trafo_fncs.append(A.RandomRotate90(p=0.5))
+        trafo_fncs.append(A.Resize(height=height, width=width, always_apply=True)),
 
         trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
 
+        # compose pipeline
         self.transform = A.Compose(trafo_fncs,
                                    bbox_params=A.BboxParams(format=self.__bbox_trafo_format,
                                                             label_fields=[self.__label_field])
@@ -379,7 +381,7 @@ class ImageDataGenerator4BoundingBoxes:
             image = Image.open(img_nm).convert(self._image_format)
             # Image.fromarray(img_ary.astype('uint8'), 'RGB')
             # get bounding-box
-            bboxes, category_ids = self._find_label_to_image(img_nm, image_size=image.size)
+            bboxes, category_ids = self._find_label_to_image(img_nm)
             # check if there is a bounding box
             if bboxes is None:
                 continue
@@ -389,7 +391,9 @@ class ImageDataGenerator4BoundingBoxes:
                                          bboxes=bboxes,
                                          category_ids=category_ids)
 
-            transformed["bboxes"] = self.__trafo_bboxes(transformed["bboxes"], image_size=self.target_size, back_trafo=True)
+            transformed["bboxes"] = self.__trafo_bboxes(transformed["bboxes"],
+                                                        image_size=transformed["image"].shape[:2],
+                                                        back_trafo=True)
             yield transformed["image"], transformed["bboxes"], transformed["category_ids"]
             # update loop control variable
             i = (i + 1) % num_images
@@ -411,11 +415,9 @@ class ImageDataGenerator4BoundingBoxes:
             bboxes_transformed.append(bx_transformed)
         return bboxes_transformed
 
-    def _find_label_to_image(self, image_name: str, image_size: Tuple[int, int]) -> Tuple[list, list]:
+    def _find_label_to_image(self, image_name: str) -> Tuple[list, list]:
         bb = self.annotations.find_label_to_image(image_name)
-        bboxes, category_ids = self.annotations.get_boundingboxes(bb,
-                                                                  bbox_format=self.__bbox_trafo_format,
-                                                                  image_size=image_size)
+        bboxes, category_ids = self.annotations.get_boundingboxes(bb, bbox_format=self.__bbox_trafo_format)
         return bboxes, category_ids
 
 
@@ -423,12 +425,30 @@ class Annotator:
     annotation = None
     __idx_annotator = 0
     categories = None
+    max_boxes = None
+    n_boxes = None
 
     def __init__(self, path_to_annotation: Union[str, pl.Path]):
         self.annotation = pd.read_json(path_to_annotation)
         self.annotation["stem"] = self.annotation.image.apply(lambda x: pl.Path(x).stem)
 
         self._set_categories()
+
+    def get_n_boxes(self, names: List[str] = None) -> Tuple[int, int]:
+        if names is None:
+            names = self.annotation.stem
+
+        self.max_boxes = 0
+        self.n_boxes = 0
+        for nm in names:
+            lbl = self.find_label_to_image(nm)
+        # for lbl in self.annotation["label"]:
+            n_boxes = len([el for el in lbl if "rectanglelabels" in el.keys()])
+            self.n_boxes += n_boxes
+
+            if n_boxes > self.max_boxes:
+                self.max_boxes = n_boxes
+        return self.n_boxes, self.max_boxes,
 
     def find_label_to_image(self, image_name: str) -> list:
         lg = self.annotation["stem"].str.contains(pl.Path(image_name).stem)
@@ -451,15 +471,17 @@ class Annotator:
     def num_categories(self):
         return len(self.categories)
 
-    def get_boundingboxes(self, labels: List[dict], bbox_format: str = "yolo", image_size: Tuple[int, int] = (0, 0)):
+    def get_boundingboxes(self, labels: List[dict], bbox_format: str = "yolo"):
         bboxes = []
         category_ids = []
         for lbl in labels:
             box = [lbl[ky] for ky in ["x", "y", "width", "height"]]  # NORMALIZED DATA
+            image_size = (int(lbl["original_width"]), int(lbl["original_height"]))
             bboxes.append(BBoxTransform().transform(bbox=box,
                                                     format_to=bbox_format,
                                                     format_from="labelstudio",
-                                                    image_size=image_size)
+                                                    image_size=image_size
+                                                    )
                           )
 
             category_label = lbl["rectanglelabels"][0]
@@ -471,7 +493,7 @@ class Annotator:
 
 
 if __name__ == "__main__":
-# https://albumentations.ai/docs/examples/example_bboxes/
+    # https://albumentations.ai/docs/examples/example_bboxes/
     x_min = 50
     y_min = 100
     w = 42
