@@ -160,7 +160,10 @@ class YOLOv3:
         num_layers = len(anchors) // 3  # default setting
         yolo_outputs = args[:num_layers]
         y_true = args[num_layers:]
-        anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]] if num_layers == 3 else [[3, 4, 5], [1, 2, 3]]
+        if num_layers == 3:
+            anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+        else:
+            anchor_mask = [[3, 4, 5], [1, 2, 3]]
         input_shape = K.cast(K.shape(yolo_outputs[0])[1:3] * 32, K.dtype(y_true[0]))
         grid_shapes = [K.cast(K.shape(yolo_outputs[i])[1:3], K.dtype(y_true[0])) for i in range(num_layers)]
         loss = 0
@@ -497,6 +500,7 @@ def preprocess_true_boxes(
 
 
 def calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh):
+    # print(f"b1_min {type(b1_min)}, b1_max {type(b1_max)}, b1_wh {type(b1_wh)}, b2_min {type(b2_min)}, b2_max {type(b2_max)}, b2_wh {type(b2_wh)}.")
     # calculate intersection with anchor boxes
     if isinstance(b1_min, tf.Tensor):
         intersect_min = K.maximum(b1_min, b2_min)
@@ -530,19 +534,21 @@ def box_iou(b1, b2):
     iou: tensor, shape=(i1,...,iN, j)
 
     """
+    # Expand dim to apply broadcasting.
+    b1 = K.expand_dims(b1, -2)
+    b1_xy = b1[..., :2]
+    b1_wh = b1[..., 2:4]
+    b1_wh_half = b1_wh/2.
+    b1_min = b1_xy - b1_wh_half
+    b1_max = b1_xy + b1_wh_half
 
     # Expand dim to apply broadcasting.
-    def expand_dims_for_broadcasting(b0):
-        b0 = K.expand_dims(b0, -2)
-        b0_xy = b0[..., :2]
-        b0_wh = b0[..., 2:4]
-        b0_wh_half = b0_wh / 2.0
-        b0_mins = b0_xy - b0_wh_half
-        b0_maxes = b0_xy + b0_wh_half
-        return b0_mins, b0_maxes, b0_wh
-
-    b1_min, b1_max, b1_wh = expand_dims_for_broadcasting(b1)
-    b2_min, b2_max, b2_wh = expand_dims_for_broadcasting(b2)
+    b2 = K.expand_dims(b2, 0)
+    b2_xy = b2[..., :2]
+    b2_wh = b2[..., 2:4]
+    b2_wh_half = b2_wh/2.
+    b2_min = b2_xy - b2_wh_half
+    b2_max = b2_xy + b2_wh_half
 
     iou = calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh)
     return iou
