@@ -24,8 +24,13 @@ from keras.layers import (
 )
 from keras.regularizers import l2
 
+# on how many scales should YOLO work? default: 3
+# NUM_SCALE_LEVELS = 3  # TINY YOLO HAS ONLY TWO SCALE LEVELS!
+
 
 class YOLOv3:
+    __color_channels = 3
+
     def __init__(
         self,
         input_shape: Tuple[int, int],
@@ -43,33 +48,28 @@ class YOLOv3:
             (10x13); (16x30); (33x23); (30x61); (62x45); (59x119); (116x90); (156x198); (373x326).
             """
             anchors = [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45), (59, 119), (116, 90), (156, 198), (373, 326)]
+            # [32, 16, 8]
         self.anchors = np.array(anchors).astype(float).reshape(-1, 2)
 
         self.flag_tiny_yolo = tiny_yolo
+        self.num_scale_levels = 2 if tiny_yolo else 3
 
     def create_model(self):
         K.clear_session()  # get a new session
-        image_input = Input(shape=(None, None, 3))
+        image_input = Input(shape=(None, None, self.__color_channels))
         h, w = self.input_shape
-        num_anchors = len(self.anchors)
+        num_anchors_total = len(self.anchors)  # total number of anchors
+        num_anchors_per_level = num_anchors_total // self.num_scale_levels
 
-        y_true = [
-            Input(
-                shape=(
-                    h // {0: 32, 1: 16, 2: 8}[i],
-                    w // {0: 32, 1: 16, 2: 8}[i],
-                    num_anchors // 3,
-                    self.num_classes + 5,
-                )
-            )
-            for i in range(3)
-        ]
+        y_true = []
+        for fct in [32, 16, 8]:
+            y_true.append(Input(shape=(h // fct, w // fct, num_anchors_per_level, self.num_classes + 5)))
 
         if self.flag_tiny_yolo:
-            model_body = self.tiny_yolo_body(image_input, num_anchors // 3)
+            model_body = self.tiny_yolo_body(image_input, num_anchors_per_level)
         else:
-            model_body = self.yolo_body(image_input, num_anchors // 3)
-        print(f"Create YOLOv3 model with {num_anchors} anchors and {self.num_classes} classes.")
+            model_body = self.yolo_body(image_input, num_anchors_per_level)
+        print(f"Create YOLOv3 model with {num_anchors_total} anchors and {self.num_classes} classes.")
 
         # TODO: if load_pretrained:
 
@@ -77,7 +77,7 @@ class YOLOv3:
             function=self.yolo_loss,
             output_shape=(1,),
             name="yolo_loss",
-            arguments={"anchors": self.anchors, "num_classes": self.num_classes, "ignore_thresh": 0.5},
+            # arguments={"ignore_thresh": 0.5},
         )([*model_body.output, *y_true])
         model = Model([model_body.input, *y_true], model_loss)
 
@@ -95,7 +95,7 @@ class YOLOv3:
         x = compose(DarknetConv2D_BN_Leaky(128, (1, 1)), UpSampling2D(2))(x)
         x = Concatenate()([x, darknet.layers[92].output])
         x, y3 = make_last_layers(x, 128, num_anchors * (self.num_classes + 5))
-
+        # NOTE: this creates the num_scale_levels layers. => must be of same size (the standard YOLO has 3 scale levels)
         return Model(inputs, [y1, y2, y3])
 
     def tiny_yolo_body(self, inputs, num_anchors: int):
@@ -128,14 +128,12 @@ class YOLOv3:
             DarknetConv2D_BN_Leaky(256, (3, 3)),
             DarknetConv2D(num_anchors * (self.num_classes + 5), (1, 1)),
         )([x2, x1])
-
+        # NOTE: this creates the num_scale_levels layers. => must be of same size (the tiny YOLO has 2 levels of scale)
         return Model(inputs, [y1, y2])
 
     def yolo_loss(
         self,
-        args: Union[tuple, list, np.array],
-        anchors: np.ndarray,
-        num_classes: int,
+        args: Union[list, np.array],
         ignore_thresh: float = 0.5,
         print_loss: bool = False,
     ):
@@ -157,13 +155,12 @@ class YOLOv3:
         loss: tensor, shape=(1,)
 
         """
-        num_layers = len(anchors) // 3  # default setting
+        num_layers = self.num_scale_levels  # default setting
         yolo_outputs = args[:num_layers]
         y_true = args[num_layers:]
-        if num_layers == 3:
-            anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
-        else:
-            anchor_mask = [[3, 4, 5], [1, 2, 3]]
+
+        anchor_mask = np.arange(len(self.anchors)).reshape(num_layers, -1)[::-1].tolist()
+
         input_shape = K.cast(K.shape(yolo_outputs[0])[1:3] * 32, K.dtype(y_true[0]))
         grid_shapes = [K.cast(K.shape(yolo_outputs[i])[1:3], K.dtype(y_true[0])) for i in range(num_layers)]
         loss = 0
@@ -182,13 +179,13 @@ class YOLOv3:
             true_class_probs = y_true[i][..., 5:]
 
             grid, raw_pred, pred_xy, pred_wh = self.yolo_head(
-                yolo_outputs[i], anchors[anchor_mask[i]], num_classes, input_shape, calc_loss=True
+                yolo_outputs[i], self.anchors[anchor_mask[i]], self.num_classes, input_shape, calc_loss=True
             )
             pred_box = K.concatenate([pred_xy, pred_wh])
 
             # Darknet raw box to calculate loss.
             raw_true_xy = y_true[i][..., :2] * grid_shapes[i][::-1] - grid
-            raw_true_wh = K.log(y_true[i][..., 2:4] / anchors[anchor_mask[i]] * input_shape[::-1])
+            raw_true_wh = K.log(y_true[i][..., 2:4] / self.anchors[anchor_mask[i]] * input_shape[::-1])
             raw_true_wh = K.switch(object_mask, raw_true_wh, K.zeros_like(raw_true_wh))  # avoid log(0)=-inf
             box_loss_scale = 2 - y_true[i][..., 2:3] * y_true[i][..., 3:4]
 
@@ -198,7 +195,7 @@ class YOLOv3:
 
             _, ignore_mask = tf.while_loop(
                 lambda b, *args: b < m, loop_body, [0, ignore_mask]
-            )  # FIXME: change to keras backend
+            )  # TODO: change to keras backend
             ignore_mask = ignore_mask.stack()
             ignore_mask = K.expand_dims(ignore_mask, -1)
 
@@ -249,6 +246,31 @@ class YOLOv3:
         if calc_loss:
             return grid, feats, box_xy, box_wh
         return box_xy, box_wh, box_confidence, box_class_probs
+
+
+def yolo_head(feats, anchors, num_classes: int, input_shape, calc_loss: bool = False):
+    """Convert final layer features to bounding box parameters."""
+    num_anchors = len(anchors)
+    # Reshape to batch, height, width, num_anchors, box_params.
+    anchors_tensor = K.reshape(K.constant(anchors), [1, 1, 1, num_anchors, 2])
+
+    grid_shape = K.shape(feats)[1:3]  # height, width
+    grid_y = K.tile(K.reshape(K.arange(0, stop=grid_shape[0]), [-1, 1, 1, 1]), [1, grid_shape[1], 1, 1])
+    grid_x = K.tile(K.reshape(K.arange(0, stop=grid_shape[1]), [1, -1, 1, 1]), [grid_shape[0], 1, 1, 1])
+    grid = K.concatenate([grid_x, grid_y])
+    grid = K.cast(grid, K.dtype(feats))
+
+    feats = K.reshape(feats, [-1, grid_shape[0], grid_shape[1], num_anchors, num_classes + 5])
+
+    # Adjust predictions to each spatial grid point and anchor size.
+    box_xy = (K.sigmoid(feats[..., :2]) + grid) / K.cast(grid_shape[..., ::-1], K.dtype(feats))
+    box_wh = K.exp(feats[..., 2:4]) * anchors_tensor / K.cast(input_shape[..., ::-1], K.dtype(feats))
+    box_confidence = K.sigmoid(feats[..., 4:5])
+    box_class_probs = K.sigmoid(feats[..., 5:])
+
+    if calc_loss:
+        return grid, feats, box_xy, box_wh
+    return box_xy, box_wh, box_confidence, box_class_probs
 
 
 def compose(*funcs):
@@ -408,6 +430,7 @@ def preprocess_true_boxes(
     input_shape: Union[List[list], np.ndarray, Tuple[int, int]],
     anchors: Union[List[list], np.ndarray],
     num_classes: int,
+    num_scale_level: int = 3
 ) -> List[np.ndarray]:
     """
     Preprocess true boxes to training input format
@@ -426,12 +449,9 @@ def preprocess_true_boxes(
 
     """
     assert (true_boxes[..., 4] < num_classes).all(), "class id must be less than num_classes"
-    num_layers = len(anchors) // 3  # default setting
-    # anchor_mask ???*?????
-    if num_layers == 3:
-        anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
-    else:
-        anchor_mask = [[3, 4, 5], [1, 2, 3]]
+    num_layers = num_scale_level  # default setting
+
+    anchor_mask = np.arange(len(anchors)).reshape(num_layers, -1)[::-1].tolist()
 
     # transform from [x1, y1, x2, y2] to [x0, y0, w, h]
     true_boxes = np.array(true_boxes, dtype="float32")
@@ -446,7 +466,7 @@ def preprocess_true_boxes(
 
     # allocate box-mask-vector ?????
     batch_size = true_boxes.shape[0]
-    grid_shapes = [input_shape // {0: 32, 1: 16, 2: 8}[i] for i in range(num_layers)]
+    grid_shapes = [input_shape // [32, 16, 8][i] for i in range(num_layers)]
     y_true = []
     for i_lyr in range(num_layers):
         grid_width = grid_shapes[i_lyr][0]
@@ -551,3 +571,12 @@ def box_iou(b1, b2):
 
     iou = calc_iou_between_boxes(b1_min, b1_max, b1_wh, b2_min, b2_max, b2_wh)
     return iou
+
+
+if __name__ == "__main__":
+    model = YOLOv3(input_shape=(416, 416),
+                   num_classes=2,
+                   anchors=None
+                   ).create_model()
+
+
