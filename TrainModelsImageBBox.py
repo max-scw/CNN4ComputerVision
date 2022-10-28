@@ -3,15 +3,14 @@ from models.yolov3 import YOLOv3, preprocess_true_boxes
 from BoundingBoxRegression import ImageDataGenerator4BoundingBoxes, Annotator
 
 from keras.optimizers import Adam
-from keras.callbacks import EarlyStopping, ModelCheckpoint, Callback, ReduceLROnPlateau
+from keras.layers import Lambda
+from keras.models import load_model
 
-from PIL import Image
 from warnings import warn
 from typing import Union, Tuple
 
 import numpy as np
 import pathlib as pl
-import logging
 
 
 class TrainModelsImageBBox(TrainModels):
@@ -26,7 +25,8 @@ class TrainModelsImageBBox(TrainModels):
                  log_file_name: str = "log",
                  use_model_checkpoints: bool = False,
                  max_boxes: int = None,
-                 target_size: Tuple[int, int] = (224, 224)
+                 target_size: Tuple[int, int] = (224, 224),
+                 kargs=None
                  ) -> None:
         super().__init__(path_to_data=path_to_data,
                          epochs=epochs,
@@ -37,11 +37,14 @@ class TrainModelsImageBBox(TrainModels):
                          log_file_name=log_file_name,
                          use_model_checkpoints=use_model_checkpoints
                          )
+        self._loss = None
         self.max_boxes = max_boxes
         self.path_to_annotation = path_to_annotation
         self.__set_n_classes_and_max_boxes()
         # ensure that the target size is a multiple of 32 for YOLO
         self.target_size = tuple(32 * (el // 32) for el in target_size)
+
+        self.kargs = kargs
 
     def __set_n_classes_and_max_boxes(self):
         annotation = Annotator(self.path_to_annotation)
@@ -55,13 +58,18 @@ class TrainModelsImageBBox(TrainModels):
 
     def get_data_generator(self, key: str, shuffle: bool = True):
 
-        # Annotator(self.path_to_annotation).n_boxes
+        if "anchors" in self.kargs.keys():
+            anchors = self.kargs["anchors"]
+            self._log.log(f"Using anchors for YOLOv: {anchors}")
+        else:
+            anchors = YOLOv3(input_shape=self.target_size, num_classes=self.n_classes).anchors
+            self._log.log("Using default anchors for YOLOv3.", print_message=True)
         # FIXME: wrapper is currently specific for YOLO!s
         gen = data_generator4yolo(path_to_images=self.paths[key],
                                   path_to_annotation=self.path_to_annotation,
                                   batch_size=self.get_batch_size(key),
                                   target_size=self.target_size,
-                                  anchors=YOLOv3(input_shape=self.target_size, num_classes=self.n_classes).anchors,
+                                  anchors=self.__get_from_kargs("anchors"),
                                   num_classes=self.n_classes,
                                   max_boxes=self.max_boxes,
                                   image_file_extension=self._file_extension,
@@ -73,16 +81,25 @@ class TrainModelsImageBBox(TrainModels):
 
     def _compile_model(self):
         self.model.compile(optimizer=Adam(learning_rate=1e-3),
-                           loss={
-                                # use custom yolo_loss Lambda layer.
-                                'yolo_loss': lambda y_true, y_pred: y_pred
-                           },
+                           loss=self._loss
                            # metrics=["mse"]
                            )
+    def __get_from_kargs(self, key):
+        if key in self.kargs.keys():
+            return self.kargs[key]
+        else:
+            return None
 
     def set_model(self, model_name: str) -> bool:
         if self._match_model_name("YOLOv3", model_name):
-            self.model = YOLOv3(input_shape=self.target_size, num_classes=self.n_classes).create_model()
+
+            self.model = YOLOv3(input_shape=self.target_size,
+                                num_classes=self.n_classes,
+                                anchors=self.__get_from_kargs("anchors")).create_model()
+            self._loss = {
+                                # use custom yolo_loss Lambda layer.
+                                'yolo_loss': lambda y_true, y_pred: y_pred
+                           },
         else:
             raise ValueError(f"Unknown model architecture: {model_name}")
 
@@ -92,7 +109,6 @@ class TrainModelsImageBBox(TrainModels):
         return True
 
 
-# sdf
 def data_generator4yolo(path_to_images: pl.Path,
                         path_to_annotation: pl.Path,
                         batch_size: int,
@@ -134,18 +150,18 @@ def data_generator4yolo(path_to_images: pl.Path,
             box_data = box_data[:, :max_boxes]
         else:
             box_data = np.pad(box_data, ((0, 0), (0, n_box_to_pad), (0, 0)), mode='constant', constant_values=0)
-
+        #print(f"INFO: sahpes: img {img.shape}, box_data {box_data.shape}, lbl {lbl.shape}")
         # Absolute x_min, y_min, x_max, y_max, class_id
         y_true = preprocess_true_boxes(box_data, target_size, anchors, num_classes)
-        yield [img, *y_true], np.zeros(batch_size)
+        yield [img, *y_true], np.zeros(batch_size)  # (x, y)
 
 
 if __name__ == "__main__":
     # INPUT SHAPE MUST BE A MULTIPLE OF 32!
-    input_shape = (512, 512)
+    input_shape = (412, 412)
 
-    path_to_image_folders = pl.Path(r"Data_ogl\withBox")
-    path_to_label = pl.Path(r"Data_ogl\project-1-at-2022-08-26-14-30-cb5e037c.json")
+    path_to_image_folders = pl.Path(r"Data_ogl_TEST/withBox")
+    path_to_label = pl.Path(r"Data_ogl/project-1-at-2022-08-26-14-30-cb5e037c.json")
 
     train = TrainModelsImageBBox(path_to_data=path_to_image_folders,
                                  path_to_annotation=path_to_label,
@@ -154,45 +170,11 @@ if __name__ == "__main__":
                                  file_extension="bmp",
                                  log_file_name="log_ImageBBox",
                                  target_size=input_shape,
-                                 verbose=True
+                                 verbose=True,
+                                 use_model_checkpoints=False,
+                                 kargs={"anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
+                                                    (59, 119), (116, 90), (156, 198), (373, 326)]},
                                  )
     train.analyze(model_name="YOLOv3")
 
-    #
-    # #
-    # # gen2 = train.get_data_generator("training", shuffle=False)
-    # #
-    # from MVE import data_generator2
-    # #
-    # yolo = YOLOv3(input_shape=train.target_size, num_classes=train.n_classes)
-    # gen = data_generator2(path_to_images=path_to_image_folders.joinpath("Trn"),
-    #                       path_to_annotation=path_to_label,
-    #                       batch_size=2,
-    #                       target_size=input_shape,
-    #                       anchors=yolo.anchors,
-    #                       num_classes=2,
-    #                       max_boxes=30,
-    #                       image_file_extension="bmp")
-    # #
-    # # for img_ytrue, img_ytrue2 in zip(gen, gen2):
-    # #     assert (img_ytrue[0] == img_ytrue2[0]).all()
-    # #     assert all([(img_ytrue[i] == img_ytrue2[i]).all() for i in range(len(img_ytrue2))])
-    #
-    # # yolo = YOLOv3(input_shape=train.target_size, num_classes=train.n_classes)
-    # # model = yolo.create_model()
-    # train.set_model("YOLOv3")
-    # # train._compile_model()
-    # # train._fit()
-    # train.fit()
-    # model = train.model
-    #
-    # # model.compile(optimizer=Adam(learning_rate=1e-3), loss={
-    # #               # use custom yolo_loss Lambda layer.
-    # #               'yolo_loss': lambda y_true, y_pred: y_pred},
-    # #               # metrics=["mse"]
-    # #               )
-    # history = model.fit(x=train.get_data_generator("training"),
-    #                     steps_per_epoch=train.get_steps_per_epoch("training"),
-    #                     epochs=2,
-    #                     )
     print("done.")

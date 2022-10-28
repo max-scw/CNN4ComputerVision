@@ -5,7 +5,6 @@ import pathlib as pl
 import random
 import re
 from datetime import datetime
-import logging
 from typing import Union, Tuple
 
 import os
@@ -14,30 +13,11 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
-from keras.callbacks import EarlyStopping, ModelCheckpoint, Callback, ReduceLROnPlateau
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras.models import Model, load_model
 from keras import backend as K
 
-
-class StayAliveLoggingCallback(Callback):
-    _log_file_name = None
-    _log_epoch_step = 1
-    _external_info = ""
-
-    def __init__(self, log_file_name: str = None, epoch_step: int = 1, info: str = ""):
-        super().__init__()
-        self._log_file_name = log_file_name
-        self._log_epoch_step = epoch_step
-        self._external_info = info
-
-        # turn logging o
-        if self._log_file_name:
-            logging.basicConfig(filename=self._log_file_name, level=logging.INFO)
-
-    def on_epoch_end(self, epoch, logs=None):
-        if self._log_file_name and (epoch % self._log_epoch_step) == 0:
-            logging.info(f"{datetime.now()} {self._external_info}, epoch {epoch}: "
-                         f"loss {round(logs['loss'], 3)}, accuracy {round(logs['accuracy'], 3)}.")
+from utils import StayAliveLoggingCallback, Log
 
 
 class TrainModels:
@@ -50,7 +30,7 @@ class TrainModels:
     _log_file_name = None
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
     _n_dense_layers_for_new_head = 1
-    _stay_alive_logging_step = 50
+    _stay_alive_logging_step = 5
     __early_stopping_after_n_epochs = 42
 
     n_classes = None
@@ -75,7 +55,7 @@ class TrainModels:
             path_to_save_models: Union[str, pl.Path] = None,
             verbose: bool = False,
             file_extension: str = "jpg",
-            log_file_name: str = "log",
+            log_file_name: str = None,
             use_model_checkpoints: bool = False,
             n_classes: int = None
     ) -> None:
@@ -85,7 +65,6 @@ class TrainModels:
         self._random_seed = random_seed
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
-        self._log_file_name = log_file_name + ".txt"
         self.use_model_checkpoints = use_model_checkpoints
 
         # set classes
@@ -93,7 +72,7 @@ class TrainModels:
         self.n_examples = {ky: self.get_n_files(ky) for ky in self.__split_names.keys()}
 
         # turn logging on
-        logging.basicConfig(filename=self._log_file_name, level=logging.INFO)
+        self._log = Log(file_name=self._log_file_name)
 
     def set_path_to_data(
             self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
@@ -211,23 +190,22 @@ class TrainModels:
         # set random seed | necessary for the nested function in the data generator which produces
         random.seed(self._random_seed)
         # start training
-        logging.info(f"{datetime.now()}: Start training {self.model_name} for {self.epochs} epochs ...")
+        self._log.log(f"Start training {self.model_name} for {self.epochs} epochs ...")
 
         # assert self.model.output.shape[1] == self.n_classes
 
         history = self.model.fit(
             x=self.get_data_generator("training"),
-            # batch_size=self.get_batch_size("training"),
             steps_per_epoch=self.get_steps_per_epoch("training"),
             epochs=self.epochs,
             verbose=self.verbose,
-            # callbacks=self.__callbacks(),
-            # validation_data=self.get_data_generator("validation"),
-            # validation_batch_size=self.get_batch_size("validation")
+            callbacks=self.__callbacks(),
+            validation_data=self.get_data_generator("validation"),
+            validation_steps=self.get_steps_per_epoch("validation")
         )
 
         self.training_history = pd.DataFrame(history.history)
-        logging.info(f"{datetime.now()}: done: {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
+        self._log.log(f"done. {self.model_name}: {self.training_history.iloc[-1].to_json()}.")
         return self.model
 
     def __callbacks(self) -> list:
@@ -237,8 +215,8 @@ class TrainModels:
                                    verbose=self.verbose
                                    ),
                      ReduceLROnPlateau(monitor="val_loss",
-                                       factor=0.1,
-                                       patience=5,
+                                       factor=0.75,
+                                       patience=25,
                                        verbose=self.verbose
                                        ),
                      StayAliveLoggingCallback(log_file_name=self._log_file_name,
@@ -249,11 +227,13 @@ class TrainModels:
 
         if self.use_model_checkpoints:
             path_model_checkpoints = self.paths["models"].joinpath(self.model_name)
-            path_model_checkpoints.mkdir()
-            callbacks += ModelCheckpoint(filepath=path_model_checkpoints,
-                                         monitor='val_loss',
-                                         mode='min',
-                                         save_best_only=True)
+            path_model_checkpoints.mkdir(parents=False, exist_ok=True)
+            callbacks += [ModelCheckpoint(filepath=path_model_checkpoints,
+                                          monitor='val_loss',
+                                          mode='min',
+                                          save_best_only=True,
+                                          verbose=self.verbose
+                                          )]
         return callbacks
 
     def _save_model(self) -> bool:
@@ -266,7 +246,9 @@ class TrainModels:
             # save model to file
             self.model.save(file_path)
             # log
-            logging.info(f"{datetime.now()}: Model saved to {file_path}.")
+            msg = f"Model {self.model_name} saved to {file_path}."
+            print(msg)
+            self._log.log(msg)
             # save history to file
             file_path = self.paths["models"].joinpath(file_name + ".csv")
             self.training_history.to_csv(file_path, index=False)
@@ -323,4 +305,3 @@ class TrainModels:
     # def set_model(self, model_name: str) -> Model:
     #     self.model = None
     #     return self.model
-

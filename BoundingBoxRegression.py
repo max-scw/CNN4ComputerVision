@@ -41,13 +41,16 @@ class BBoxTransform:
                 break
         return flag
 
-    def __get_format_mode(self, input_string: str) -> (int, bool):
+    def __get_format_mode(self, input_string: str) -> (int, bool, bool):
+        pat_space = r"(\\|\-|\s|_)"
         patterns_center_width = ["xywh", "yolo", "x0y0wh"]
-        patterns_min_max = ["min_max", "pascal(_voc)?", "x_min, y_min, x_max, y_max", "xyxy", "x1y1x2y2",
+        patterns_min_max = ["min(_|\-)?max", "pascal(_voc)?", "x_min, y_min, x_max, y_max", "xyxy", "x1y1x2y2",
                             r"min(\|-s)max", "corner", "albumentations"]
         patterns_min_width = ["min_wh", "coco", "x_min, y_min, width, height", "labelstudio"]
 
-        patterns_norm = [r"(\|-s)rel", r"(\|-s)norm", r"(\|-s)scaled", "albumentations", "yolo", "labelstudio"]
+        patterns_norm = [rf"{pat_space}rel", rf"{pat_space}norm", rf"{pat_space}scaled", "albumentations", "yolo",
+                         "labelstudio"]
+        patterns_yx = [rf"{pat_space}yx"]
 
         mode_id = -1
         for i, pat in enumerate([patterns_center_width, patterns_min_max, patterns_min_width]):
@@ -56,7 +59,15 @@ class BBoxTransform:
                 break
 
         flag_rel = self.__check_format(patterns_norm, input_string)
-        return mode_id, flag_rel
+        flag_yx = self.__check_format(patterns_yx, input_string)
+        return mode_id, flag_rel, flag_yx
+
+    def __xy2yx(self, bbox: np.ndarray) -> np.ndarray:
+        # xy => yx
+        bbox_new = bbox.copy()
+        bbox_new[1::2] = bbox[0::2]
+        bbox_new[0::2] = bbox[1::2]
+        return bbox_new
 
     def transform(self, bbox: Union[List, Tuple, np.ndarray],
                   format_to: str,
@@ -65,11 +76,13 @@ class BBoxTransform:
         bbox = np.array(bbox)
 
         # extract / analyze format strings
-        mode_from, flag_rel_from = self.__get_format_mode(format_from)
-        mode_to, flag_rel_to = self.__get_format_mode(format_to)
+        mode_from, flag_rel_from, flag_yx_from = self.__get_format_mode(format_from)
+        mode_to, flag_rel_to, flag_yx_to = self.__get_format_mode(format_to)
 
         # make all input relative
         if not flag_rel_from:
+            if flag_yx_from:
+                image_size = self.__xy2yx(image_size)
             bbox = self.__abs2rel(bbox, image_size)
 
         if (np.array(bbox) > 1).any():
@@ -104,6 +117,9 @@ class BBoxTransform:
 
         if not flag_rel_to:
             out = self.__rel2abs(out, image_size)
+
+        if flag_yx_to and not flag_yx_from:
+            out = self.__xy2yx(out)
 
         return tuple(out)
 
@@ -275,6 +291,7 @@ class ImageDataGenerator4BoundingBoxes:
     __label_field = "category_ids"
     _image_file_extension = "jpg"
     _image_format = "RGB"
+    __i_batch = 0
 
     def __init__(
                 self,
@@ -286,64 +303,72 @@ class ImageDataGenerator4BoundingBoxes:
                 bbox_format: str = "yolo",
                 image_file_extension: str = "jpg",
                 batch_size: int = None,
-                color_mode: str = "grayscale"
+                color_mode: str = "grayscale",
+                augment_data: bool = True
                 ) -> None:
         self.path_to_data = path_to_data
         self.path_to_annotation = path_to_annotation
-
         self.annotations = Annotator(self.path_to_annotation)
 
-        self._random_seed = random_seed
-        self._shuffle = shuffle
-
         self.target_size = target_size
-        self.batch_size = batch_size
+        self._batch_size = batch_size
         self.color_mode = color_mode
 
         self.bbox_format = bbox_format
         self._image_file_extension = image_file_extension.strip("., \t\r\n")
+        self.augment_data = augment_data
 
-        self.__set_transformation_pipeline()
+        self.reset_seed(random_seed)
+        self._shuffle = shuffle
+
+
 
     @property
     def num_classes(self):
         return self.annotations.num_categories
 
     @property
-    def images(self):
-        return list(self.path_to_data.glob("*." + self._image_file_extension))
+    def images(self) -> list:
+        list_of_images = list(self.path_to_data.glob("*." + self._image_file_extension))
+        if not list_of_images:
+            raise ValueError("No images found!")
+        return list_of_images
 
     @property
-    def num_images(self):
+    def num_images(self) -> int:
         return len(self.images)
 
     def __set_transformation_pipeline(self):
         width, height = self.target_size
+
+        # get original image size
+        # image_size_ogl = Image.open(self.images[0]).size
         
         trafo_fncs = []
-        # --- noise
-        trafo_fncs.append(A.GaussNoise(p=0.5))
-        if self.color_mode.lower() == "rgb":
-            trafo_fncs.append(A.ISONoise(p=0.5))  # camera sensor noise
-        # --- filter
-        trafo_fncs.append(A.Sharpen(p=0.2))
-        trafo_fncs.append(A.Blur(blur_limit=2, p=0.2))
-        # --- brightness / pixel-values
-        trafo_fncs.append(A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3))
-        # A.RandomGamma(p=0.2),
-        # A.CLAHE(p=0.2),  # Contrast Limited Adaptive Histogram Equalization
-        # A.RGBShift(p=0.1),
-        # --- geometry
-        # A.RandomSizedCrop((512 - 100, 512 + 100), 512, 512),
-        # A.CenterCrop(width=450, height=450)
-        trafo_fncs.append(A.RandomSizedBBoxSafeCrop(width=width, height=height, p=0.75))
-        trafo_fncs.append(A.HorizontalFlip(p=0.5))
-        trafo_fncs.append(A.VerticalFlip(p=0.5),)
-        trafo_fncs.append(A.ShiftScaleRotate(scale_limit=0.1, rotate_limit=45, p=0.5))
-        trafo_fncs.append(A.RandomRotate90(p=0.5))
+        if self.augment_data:
+            # --- noise
+            trafo_fncs.append(A.GaussNoise(var_limit=(10, 50), p=0.2))
+            if self.color_mode.lower() == "rgb":
+                trafo_fncs.append(A.ISONoise(p=0.5))  # camera sensor noise
+            # --- filter
+            trafo_fncs.append(A.Sharpen(p=0.2))
+            trafo_fncs.append(A.Blur(blur_limit=2, p=0.2))
+            # # --- brightness / pixel-values
+            # trafo_fncs.append(A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3))
+            # A.RandomGamma(p=0.2),
+            # A.CLAHE(p=0.2),  # Contrast Limited Adaptive Histogram Equalization
+            # A.RGBShift(p=0.1),
+            # --- geometry
+            # A.RandomSizedCrop((512 - 100, 512 + 100), 512, 512),
+            # A.CenterCrop(width=450, height=450)
+            trafo_fncs.append(A.HorizontalFlip(p=0.5))
+            trafo_fncs.append(A.VerticalFlip(p=0.5),)
+            trafo_fncs.append(A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.5))
+            trafo_fncs.append(A.RandomRotate90(p=1))
+            trafo_fncs.append(A.BBoxSafeRandomCrop(p=0.5, erosion_rate=0.01))
         trafo_fncs.append(A.Resize(height=height, width=width, always_apply=True)),
-
-        trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
+        if self.augment_data:
+            trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
 
         # compose pipeline
         self.transform = A.Compose(trafo_fncs,
@@ -352,28 +377,80 @@ class ImageDataGenerator4BoundingBoxes:
                                    )
         return True
 
-    def iter_batchs(self):
+    @property
+    def steps_per_epoch(self) -> int:
+        return self.num_images // self.batch_size
+
+    @property
+    def batch_size(self):
+        if self._batch_size is None:
+            self._batch_size = self._determine_batch_size(self.num_images)
+        return self._batch_size
+
+    @staticmethod
+    def _determine_batch_size(n_examples: int, batch_size_max: int = 64) -> int:
+        batch_size_max = np.min([batch_size_max, np.max([n_examples // 3, 1])])
+
+        # find most suitable batch size
+        batch_size = -1
+        remainder = np.inf
+        for sz in range(batch_size_max, 0, -1):
+            tmp_remainder = n_examples % sz
+            if tmp_remainder < remainder:
+                remainder = tmp_remainder
+                batch_size = sz
+                if remainder == 0:
+                    break
+        return batch_size
+
+    def iter_batchs(self, num_batches: int = None):
         batch_img, batch_bbx, batch_lbl = list(), list(), list()
         for i, (img, bbx, lbl) in enumerate(self._iterimages()):
             batch_img.append(img)
             batch_bbx.append(bbx)
             batch_lbl.append(lbl)
-            if (i % self.batch_size) >= (self.batch_size - 1):
+            if (i % self.batch_size) >= (self.batch_size - 1):  # FIXME
                 batch_img = np.stack(batch_img, axis=0)
                 batch_bbx = np.stack(batch_bbx, axis=0)
                 batch_lbl = np.stack(batch_lbl, axis=0)
                 yield batch_img, batch_bbx, batch_lbl
                 # reset
                 batch_img, batch_bbx, batch_lbl = list(), list(), list()
+                if num_batches and i/self.batch_size >= num_batches:
+                    break
 
-    def _iterimages(self):
+    def iter_epochs(self, n_epochs: int = 10):
+        for e in range(n_epochs):
+            for b, x in enumerate(self.iter_batchs()):
+                yield x
+                if b >= self.steps_per_epoch:
+                    break
+
+    def iter_epoch(self):
+        for b, x in enumerate(self.iter_batchs(self.steps_per_epoch)):
+            yield x
+
+    def iter_images(self):
+        for i, x in enumerate(self._iterimages()):
+            yield x
+            if i >= self.num_images:
+                break
+
+    def reset_seed(self, seed: int = None) -> bool:
+        if seed:
+            self._random_seed = seed
         random.seed(self._random_seed)
 
+        self.__set_transformation_pipeline()
+        self.__i_batch = 0
+        return True
+
+    def _iterimages(self):
         list_of_images = self.images
         num_images = len(list_of_images)
 
-        i = 0
         while True:
+            i = self.__i_batch % num_images
             if i == 0 and self._shuffle:
                 random.shuffle(list_of_images)
             img_nm = list_of_images[i]
@@ -396,7 +473,7 @@ class ImageDataGenerator4BoundingBoxes:
                                                         back_trafo=True)
             yield transformed["image"], transformed["bboxes"], transformed["category_ids"]
             # update loop control variable
-            i = (i + 1) % num_images
+            self.__i_batch += 1
 
     def __trafo_bboxes(self, bboxes, image_size, back_trafo: bool = False):
         if back_trafo:
@@ -427,12 +504,17 @@ class Annotator:
     categories = None
     max_boxes = None
     n_boxes = None
+    _path_to_annotation = None
 
     def __init__(self, path_to_annotation: Union[str, pl.Path]):
-        self.annotation = pd.read_json(path_to_annotation)
+        self._path_to_annotation = pl.Path(path_to_annotation)
+        self.annotation = pd.read_json(self._path_to_annotation)
         self.annotation["stem"] = self.annotation.image.apply(lambda x: pl.Path(x).stem)
 
         self._set_categories()
+
+    def __str__(self):
+        return f"Annotator({self._path_to_annotation.as_posix()})"
 
     def get_n_boxes(self, names: List[str] = None) -> Tuple[int, int]:
         if names is None:
@@ -457,7 +539,7 @@ class Annotator:
 
     def _set_categories(self):
         label_categories = []
-        for idx, row in self.annotation["label"].iteritems():
+        for idx, row in self.annotation["label"].items():
             for lbl in row:
                 for el in lbl["rectanglelabels"]:
                     if el not in label_categories:
