@@ -33,13 +33,16 @@ class YOLOv3:
 
     def __init__(
         self,
-        input_shape: Tuple[int, int],
-        num_classes: int,
-        anchors: Union[List[Tuple[int, int]], np.ndarray] = None,
-        tiny_yolo: bool = False,
+            input_shape: Tuple[int, int],
+            num_classes: int,
+            anchors: Union[List[Tuple[int, int]], np.ndarray] = None,
+            tiny_yolo: bool = False,
     ) -> None:
         self.input_shape = input_shape
         self.num_classes = num_classes
+        self.flag_tiny_yolo = True if tiny_yolo else False
+        self.num_scale_levels = 2 if tiny_yolo else 3
+
         if anchors is None:
             """
             We still use k-means clustering to determine our bounding box priors. We just sort of chose 9 clusters and
@@ -47,28 +50,41 @@ class YOLOv3:
             clusters were:
             (10x13); (16x30); (33x23); (30x61); (62x45); (59x119); (116x90); (156x198); (373x326).
             """
-            anchors = [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45), (59, 119), (116, 90), (156, 198), (373, 326)]
-            # [32, 16, 8]
+            if self.flag_tiny_yolo:
+                # tiny YOLOv3 has only 2 scale levels
+                anchors = [(10, 14), (23, 27), (37, 58),
+                           (81, 82), (135, 169), (344, 319)]
+            else:
+                # the standard YOLOv3 works at 3 scale levels
+                anchors = [(10, 13), (16, 30), (33, 23),
+                           (30, 61), (62, 45), (59, 119),
+                           (116, 90), (156, 198), (373, 326)]
+
+            # factors: [32, 16, 8]
         self.anchors = np.array(anchors).astype(float).reshape(-1, 2)
 
-        self.flag_tiny_yolo = tiny_yolo
-        self.num_scale_levels = 2 if tiny_yolo else 3
+    @property
+    def model_name(self) -> str:
+        shape = "x".join([str(el) for el in self.input_shape])
+        scale = f"{len(self.anchors)}x{self.num_scale_levels}"
+        return "YOLOv3" + "-".join([shape, scale])
 
     def create_model(self):
-        K.clear_session()  # get a new session
-        image_input = Input(shape=(None, None, self.__color_channels))
-        h, w = self.input_shape
         num_anchors_total = len(self.anchors)  # total number of anchors
         num_anchors_per_level = num_anchors_total // self.num_scale_levels
 
-        y_true = []
-        for fct in [32, 16, 8]:
-            y_true.append(Input(shape=(h // fct, w // fct, num_anchors_per_level, self.num_classes + 5)))
-
+        image_input = Input(shape=(None, None, self.__color_channels))
         if self.flag_tiny_yolo:
             model_body = self.tiny_yolo_body(image_input, num_anchors_per_level)
         else:
             model_body = self.yolo_body(image_input, num_anchors_per_level)
+
+        h, w = self.input_shape
+        y_true = []
+        for i in range(self.num_scale_levels):
+            fct = [32, 16, 8][i]
+            y_true.append(Input(shape=(h // fct, w // fct, num_anchors_per_level, self.num_classes + 5)))
+
         print(f"Create YOLOv3 model with {num_anchors_total} anchors and {self.num_classes} classes.")
 
         # TODO: if load_pretrained:
@@ -79,12 +95,12 @@ class YOLOv3:
             name="yolo_loss",
             # arguments={"ignore_thresh": 0.5},
         )([*model_body.output, *y_true])
-        model = Model([model_body.input, *y_true], model_loss)
-
-        return model
+        return Model([model_body.input, *y_true], model_loss, name=self.model_name)
 
     def yolo_body(self, inputs, num_anchors: int):
         """Create YOLO_V3 model CNN body in Keras."""
+        num_anchors = len(self.anchors) // self.num_scale_levels
+
         darknet = Model(inputs, darknet_body(inputs))
         x, y1 = make_last_layers(darknet.output, 512, num_anchors * (self.num_classes + 5))
 
@@ -100,6 +116,8 @@ class YOLOv3:
 
     def tiny_yolo_body(self, inputs, num_anchors: int):
         """Create Tiny YOLO_v3 model CNN body in keras."""
+        num_anchors = len(self.anchors) // self.num_scale_levels
+
         x1 = compose(
             DarknetConv2D_BN_Leaky(16, (3, 3)),
             MaxPooling2D(pool_size=(2, 2), strides=(2, 2), padding="same"),
@@ -155,14 +173,14 @@ class YOLOv3:
         loss: tensor, shape=(1,)
 
         """
-        num_layers = self.num_scale_levels  # default setting
-        yolo_outputs = args[:num_layers]
-        y_true = args[num_layers:]
+        # num_layers = self.num_scale_levels  # default setting
+        yolo_outputs = args[:self.num_scale_levels]
+        y_true = args[self.num_scale_levels:]
 
-        anchor_mask = np.arange(len(self.anchors)).reshape(num_layers, -1)[::-1].tolist()
+        anchor_mask = np.arange(len(self.anchors)).reshape(self.num_scale_levels, -1)[::-1].tolist()
 
-        input_shape = K.cast(K.shape(yolo_outputs[0])[1:3] * 32, K.dtype(y_true[0]))
-        grid_shapes = [K.cast(K.shape(yolo_outputs[i])[1:3], K.dtype(y_true[0])) for i in range(num_layers)]
+        input_shape = K.cast(K.shape(yolo_outputs[0])[1:3] * 32, K.dtype(y_true[0]))  # height, width
+        grid_shapes = [K.cast(K.shape(yolo_outputs[i])[1:3], K.dtype(y_true[0])) for i in range(self.num_scale_levels)]
         loss = 0
         m = K.shape(yolo_outputs[0])[0]  # batch size, tensor
         mf = K.cast(m, K.dtype(yolo_outputs[0]))
@@ -174,7 +192,7 @@ class YOLOv3:
             ignore_msk = ignore_msk.write(b, K.cast(best_iou < ignore_thresh, K.dtype(true_box)))
             return b + 1, ignore_msk
 
-        for i in range(num_layers):
+        for i in range(self.num_scale_levels):
             object_mask = y_true[i][..., 4:5]
             true_class_probs = y_true[i][..., 5:]
 
@@ -574,9 +592,11 @@ def box_iou(b1, b2):
 
 
 if __name__ == "__main__":
+
     model = YOLOv3(input_shape=(416, 416),
                    num_classes=2,
-                   anchors=None
+                   anchors=None,
+                   tiny_yolo=True
                    ).create_model()
 
 

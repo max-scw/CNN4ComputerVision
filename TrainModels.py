@@ -72,7 +72,7 @@ class TrainModels:
         self.n_examples = {ky: self.get_n_files(ky) for ky in self.__split_names.keys()}
 
         # turn logging on
-        self._log = Log(file_name=log_file_name)
+        self._log = Log(file_name=log_file_name, print_message=self.verbose)
 
     def set_path_to_data(
             self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
