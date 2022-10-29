@@ -18,6 +18,7 @@ class TrainModelsImageBBox(TrainModels):
                  path_to_data: Union[pl.Path, str],
                  path_to_annotation: Union[pl.Path, str],
                  epochs: int,
+                 target_size: Tuple[int, int] = (224, 224),
                  random_seed: int = 42,
                  path_to_save_models: Union[str, pl.Path] = None,
                  verbose: bool = False,
@@ -25,7 +26,6 @@ class TrainModelsImageBBox(TrainModels):
                  log_file_name: str = "log",
                  use_model_checkpoints: bool = False,
                  max_boxes: int = None,
-                 target_size: Tuple[int, int] = (224, 224),
                  kargs=None
                  ) -> None:
         super().__init__(path_to_data=path_to_data,
@@ -46,10 +46,11 @@ class TrainModelsImageBBox(TrainModels):
 
         self.kargs = kargs
 
-    def __set_n_classes_and_max_boxes(self):
+    def __set_n_classes_and_max_boxes(self) -> bool:
         annotation = Annotator(self.path_to_annotation)
         _, self.max_boxes = annotation.get_n_boxes()
         self.n_classes = annotation.num_categories
+        return True
 
     # def get_batch_size(self, key: str):
     #     files = [el.stem for el in self.paths[key].glob("*" + self._file_extension)]
@@ -109,6 +110,7 @@ class TrainModelsImageBBox(TrainModels):
         return True
 
 
+# sdf
 def data_generator4yolo(path_to_images: pl.Path,
                         path_to_annotation: pl.Path,
                         batch_size: int,
@@ -172,8 +174,14 @@ if __name__ == "__main__":
                                  target_size=input_shape,
                                  verbose=True,
                                  use_model_checkpoints=False,
-                                 kargs={"anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
-                                                    (59, 119), (116, 90), (156, 198), (373, 326)]},
+                                 # kargs={"anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
+                                 #                    (59, 119), (116, 90), (156, 198), (373, 326)]},
+                                 kargs={"anchors": [(208, 384), (238, 380), (268, 369), (295, 351), (318, 326),
+                                                    (336, 296), (349, 262), (355, 226), (355, 189), (349, 153),
+                                                    (336, 119), (318, 89), (295, 64), (268, 46), (238, 35), (208, 31),
+                                                    (177, 35), (147, 46), (120, 64), (97, 89), (79, 119), (66, 153),
+                                                    (60, 189), (60, 226), (66, 262), (79, 296), (97, 326), (120, 351),
+                                                    (147, 369), (177, 380)]}
                                  )
     train.analyze(model_name="YOLOv3")
 

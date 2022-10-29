@@ -72,7 +72,7 @@ class TrainModels:
         self.n_examples = {ky: self.get_n_files(ky) for ky in self.__split_names.keys()}
 
         # turn logging on
-        self._log = Log(file_name=self._log_file_name)
+        self._log = Log(file_name=log_file_name)
 
     def set_path_to_data(
             self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
@@ -217,6 +217,9 @@ class TrainModels:
                      ReduceLROnPlateau(monitor="val_loss",
                                        factor=0.75,
                                        patience=25,
+                                       min_lr=1e-8,
+                                       min_delta=1e-6,
+                                       cooldown=15,
                                        verbose=self.verbose
                                        ),
                      StayAliveLoggingCallback(log_file_name=self._log_file_name,
@@ -247,8 +250,7 @@ class TrainModels:
             self.model.save(file_path)
             # log
             msg = f"Model {self.model_name} saved to {file_path}."
-            print(msg)
-            self._log.log(msg)
+            self._log.log(msg, print_message=True)
             # save history to file
             file_path = self.paths["models"].joinpath(file_name + ".csv")
             self.training_history.to_csv(file_path, index=False)
