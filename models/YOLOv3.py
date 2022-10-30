@@ -2,11 +2,13 @@
 YOLO_v3 model defined in Keras.
 (inspired) from https://github.com/qqwweee/keras-yolo3
 """
+import numpy as np
+import pathlib as pl
+from PIL import Image
 
 from functools import wraps, reduce
 from typing import Union, Tuple, List
 
-import numpy as np
 import tensorflow as tf
 from keras import backend as K
 from keras.models import Model
@@ -24,12 +26,10 @@ from keras.layers import (
 )
 from keras.regularizers import l2
 
-# on how many scales should YOLO work? default: 3
-# NUM_SCALE_LEVELS = 3  # TINY YOLO HAS ONLY TWO SCALE LEVELS!
-
 
 class YOLOv3:
     __color_channels = 3
+    model = None
 
     def __init__(
         self,
@@ -37,11 +37,13 @@ class YOLOv3:
             num_classes: int,
             anchors: Union[List[Tuple[int, int]], np.ndarray] = None,
             tiny_yolo: bool = False,
+            max_boxes: int = 100
     ) -> None:
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.flag_tiny_yolo = True if tiny_yolo else False
         self.num_scale_levels = 2 if tiny_yolo else 3
+        self.max_boxes = max_boxes
 
         if anchors is None:
             """
@@ -66,8 +68,11 @@ class YOLOv3:
     @property
     def model_name(self) -> str:
         shape = "x".join([str(el) for el in self.input_shape])
-        scale = f"{len(self.anchors)}x{self.num_scale_levels}"
-        return "YOLOv3" + "-".join([shape, scale])
+        scale = f"{len(self.anchors)}x{self.num_scale_levels}",
+
+        info = ["tiny"] if self.flag_tiny_yolo else []
+        info += [shape, scale]
+        return "YOLOv3" + "-".join(info)
 
     def create_model(self):
         num_anchors_total = len(self.anchors)  # total number of anchors
@@ -95,7 +100,8 @@ class YOLOv3:
             name="yolo_loss",
             # arguments={"ignore_thresh": 0.5},
         )([*model_body.output, *y_true])
-        return Model([model_body.input, *y_true], model_loss, name=self.model_name)
+        self.model = Model([model_body.input, *y_true], model_loss, name=self.model_name)
+        return self.model
 
     def yolo_body(self, inputs, num_anchors: int):
         """Create YOLO_V3 model CNN body in Keras."""
@@ -265,6 +271,43 @@ class YOLOv3:
             return grid, feats, box_xy, box_wh
         return box_xy, box_wh, box_confidence, box_class_probs
 
+    def load_model(self, filename_model_weights: Union[str, pl.Path]) -> Model:
+        if self.model is None:
+            self.create_model()
+        # load weights
+        self.model.load_weights(filename_model_weights)
+        return self.model
+
+    def predict(self, image: Union[np.ndarray, Image.Image]):
+        # image must be at the right size and scaled!
+        # TODO: Image input
+        if any(np.shape(image)[:2] != self.input_shape):
+            img = Image.fromarray(image).resize(self.input_shape)
+            image = np.asarray(img) / 255.0  # RESCALE
+
+        image_data = np.expand_dims(image, 0)  # Add batch dimension.
+
+        out_boxes, out_scores, out_classes = self._call_model(image_data)
+        print(f"Found {len(out_boxes)} boxes.")
+
+        # TODO: visualize!
+
+    def _call_model(self, image_tensor):
+        yolo_outputs = self.model(image_tensor)
+        out_boxes, out_scores, out_classes = yolo_eval(yolo_outputs,
+                                                       self.anchors,
+                                                       self.num_classes,
+                                                       self.input_shape,
+                                                       max_boxes=self.max_boxes)
+        # yolo_outputs,
+        # anchors,
+        # num_classes,
+        # image_shape,
+        # max_boxes = 20,
+        # score_threshold = .6,
+        # iou_threshold = .5
+
+        return out_boxes.numpy(), out_scores.numpy(), out_classes.numpy()
 
 def yolo_head(feats, anchors, num_classes: int, input_shape, calc_loss: bool = False):
     """Convert final layer features to bounding box parameters."""
@@ -356,91 +399,86 @@ def make_last_layers(x, num_filters: int, out_filters):
     return x, y
 
 
-# def yolo_correct_boxes(box_xy, box_wh, input_shape: Tuple[int, int], image_shape: Tuple[int, int]):
-#     """Get corrected boxes"""
-#     box_yx = box_xy[..., ::-1]
-#     box_hw = box_wh[..., ::-1]
-#     input_shape = K.cast(input_shape, K.dtype(box_yx))
-#     image_shape = K.cast(image_shape, K.dtype(box_yx))
-#     new_shape = K.round(image_shape * K.min(input_shape / image_shape))
-#     offset = (input_shape - new_shape) / 2.0 / input_shape
-#     scale = input_shape / new_shape
-#     box_yx = (box_yx - offset) * scale
-#     box_hw *= scale
-#
-#     box_mins = box_yx - (box_hw / 2.0)
-#     box_maxes = box_yx + (box_hw / 2.0)
-#     boxes = K.concatenate(
-#         [
-#             box_mins[..., 0:1],  # y_min
-#             box_mins[..., 1:2],  # x_min
-#             box_maxes[..., 0:1],  # y_max
-#             box_maxes[..., 1:2],  # x_max
-#         ]
-#     )
-#
-#     # Scale boxes back to original image shape.
-#     boxes *= K.concatenate([image_shape, image_shape])
-#     return boxes
-#
-#
-# def yolo_boxes_and_scores(feats, anchors, num_classes: int, input_shape: Tuple[int, int], image_shape: Tuple[int, int]):
-#     """Process Conv layer output"""
-#     box_xy, box_wh, box_confidence, box_class_probs = yolo_head(feats, anchors, num_classes, input_shape)
-#     boxes = yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape)
-#     boxes = K.reshape(boxes, [-1, 4])
-#     box_scores = box_confidence * box_class_probs
-#     box_scores = K.reshape(box_scores, [-1, num_classes])
-#     return boxes, box_scores
-#
-#
-# def yolo_eval(
-#     yolo_outputs,
-#     anchors,
-#     num_classes: int,
-#     image_shape: Tuple[int, int],
-#     max_boxes: int = 20,
-#     score_threshold: float = 0.6,
-#     iou_threshold: float = 0.5,
-# ):
-#     """Evaluate YOLO model on given input and return filtered boxes."""
-#     num_layers = len(yolo_outputs)
-#     anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]] if num_layers == 3 else [[3, 4, 5], [1, 2, 3]]  # default setting
-#     input_shape = K.shape(yolo_outputs[0])[1:3] * 32
-#     boxes = []
-#     box_scores = []
-#     for i in range(num_layers):
-#         _boxes, _box_scores = yolo_boxes_and_scores(
-#             yolo_outputs[i], anchors[anchor_mask[i]], num_classes, input_shape, image_shape
-#         )
-#         boxes.append(_boxes)
-#         box_scores.append(_box_scores)
-#     boxes = K.concatenate(boxes, axis=0)
-#     box_scores = K.concatenate(box_scores, axis=0)
-#
-#     mask = box_scores >= score_threshold
-#     max_boxes_tensor = K.constant(max_boxes, dtype="int32")
-#     boxes_ = []
-#     scores_ = []
-#     classes_ = []
-#     for c in range(num_classes):
-#         # TODO: use keras backend instead of tf.
-#         class_boxes = tf.boolean_mask(boxes, mask[:, c])
-#         class_box_scores = tf.boolean_mask(box_scores[:, c], mask[:, c])
-#         nms_index = tf.image.non_max_suppression(
-#             class_boxes, class_box_scores, max_boxes_tensor, iou_threshold=iou_threshold
-#         )
-#         class_boxes = K.gather(class_boxes, nms_index)
-#         class_box_scores = K.gather(class_box_scores, nms_index)
-#         classes = K.ones_like(class_box_scores, "int32") * c
-#         boxes_.append(class_boxes)
-#         scores_.append(class_box_scores)
-#         classes_.append(classes)
-#     boxes_ = K.concatenate(boxes_, axis=0)
-#     scores_ = K.concatenate(scores_, axis=0)
-#     classes_ = K.concatenate(classes_, axis=0)
-#
-#     return boxes_, scores_, classes_
+def yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape):
+    '''Get corrected boxes'''
+    box_yx = box_xy[..., ::-1]
+    box_hw = box_wh[..., ::-1]
+    input_shape = K.cast(input_shape, K.dtype(box_yx))
+    image_shape = K.cast(image_shape, K.dtype(box_yx))
+    new_shape = K.round(image_shape * K.min(input_shape/image_shape))
+    offset = (input_shape-new_shape)/2./input_shape
+    scale = input_shape/new_shape
+    box_yx = (box_yx - offset) * scale
+    box_hw *= scale
+
+    box_mins = box_yx - (box_hw / 2.)
+    box_maxes = box_yx + (box_hw / 2.)
+    boxes =  K.concatenate([
+        box_mins[..., 0:1],  # y_min
+        box_mins[..., 1:2],  # x_min
+        box_maxes[..., 0:1],  # y_max
+        box_maxes[..., 1:2]  # x_max
+    ])
+
+    # Scale boxes back to original image shape.
+    boxes *= K.concatenate([image_shape, image_shape])
+    return boxes
+
+
+def yolo_boxes_and_scores(feats, anchors, num_classes, input_shape, image_shape):
+    '''Process Conv layer output'''
+    box_xy, box_wh, box_confidence, box_class_probs = yolo_head(feats,
+        anchors, num_classes, input_shape)
+    boxes = yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape)
+    boxes = K.reshape(boxes, [-1, 4])
+    box_scores = box_confidence * box_class_probs
+    box_scores = K.reshape(box_scores, [-1, num_classes])
+    return boxes, box_scores
+
+
+def yolo_eval(yolo_outputs,
+              anchors,
+              num_classes,
+              image_shape,
+              max_boxes=20,
+              score_threshold=.6,
+              iou_threshold=.5):
+    """Evaluate YOLO model on given input and return filtered boxes."""
+    num_layers = len(yolo_outputs)
+    anchor_mask = np.arange(len(anchors)).reshape(num_layers, -1)[::-1].tolist()
+    input_shape = K.shape(yolo_outputs[0])[1:3] * 32
+    boxes = []
+    box_scores = []
+    for l in range(num_layers):
+        _boxes, _box_scores = yolo_boxes_and_scores(yolo_outputs[l],
+            anchors[anchor_mask[l]], num_classes, input_shape, image_shape)
+        boxes.append(_boxes)
+        box_scores.append(_box_scores)
+    boxes = K.concatenate(boxes, axis=0)
+    box_scores = K.concatenate(box_scores, axis=0)
+
+    mask = box_scores >= score_threshold
+    max_boxes_tensor = K.constant(max_boxes, dtype='int32')
+    boxes_ = []
+    scores_ = []
+    classes_ = []
+    for c in range(num_classes):
+        # TODO: use keras backend instead of tf.
+        class_boxes = tf.boolean_mask(boxes, mask[:, c])
+        class_box_scores = tf.boolean_mask(box_scores[:, c], mask[:, c])
+        nms_index = tf.image.non_max_suppression(
+            class_boxes, class_box_scores, max_boxes_tensor, iou_threshold=iou_threshold)
+        class_boxes = K.gather(class_boxes, nms_index)
+        class_box_scores = K.gather(class_box_scores, nms_index)
+        classes = K.ones_like(class_box_scores, 'int32') * c
+        boxes_.append(class_boxes)
+        scores_.append(class_box_scores)
+        classes_.append(classes)
+    boxes_ = K.concatenate(boxes_, axis=0)
+    scores_ = K.concatenate(scores_, axis=0)
+    classes_ = K.concatenate(classes_, axis=0)
+
+    return boxes_, scores_, classes_
 
 
 def preprocess_true_boxes(
