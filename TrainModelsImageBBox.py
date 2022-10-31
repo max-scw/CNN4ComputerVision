@@ -97,8 +97,10 @@ class TrainModelsImageBBox(TrainModels):
             self.model_info = YOLOv3(input_shape=self.target_size,
                                      num_classes=self.n_classes,
                                      anchors=self.__get_from_kargs("anchors"),
-                                     tiny_yolo=True if self.__get_from_kargs("tiny_yolo") else False
+                                     tiny_yolo=True if self.__get_from_kargs("tiny_yolo") else False,
+                                     max_boxes=self.max_boxes
                                      )
+            self.model_name = self.model_info.model_name
             self.model = self.model_info.create_model()
             self._loss = {
                                 # use custom yolo_loss Lambda layer.

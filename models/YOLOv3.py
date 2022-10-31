@@ -9,6 +9,8 @@ from PIL import Image
 from functools import wraps, reduce
 from typing import Union, Tuple, List
 
+from utils.utils import draw_box
+
 import tensorflow as tf
 from keras import backend as K
 from keras.models import Model
@@ -68,13 +70,13 @@ class YOLOv3:
     @property
     def model_name(self) -> str:
         shape = "x".join([str(el) for el in self.input_shape])
-        scale = f"{len(self.anchors)}x{self.num_scale_levels}",
+        scale = f"{len(self.anchors)}x{self.num_scale_levels}"
 
         info = ["tiny"] if self.flag_tiny_yolo else []
         info += [shape, scale]
         return "YOLOv3" + "-".join(info)
 
-    def create_model(self):
+    def _build_model_body(self):
         num_anchors_total = len(self.anchors)  # total number of anchors
         num_anchors_per_level = num_anchors_total // self.num_scale_levels
 
@@ -83,6 +85,12 @@ class YOLOv3:
             model_body = self.tiny_yolo_body(image_input, num_anchors_per_level)
         else:
             model_body = self.yolo_body(image_input, num_anchors_per_level)
+        return model_body
+
+    def create_model(self):
+        num_anchors_total = len(self.anchors)  # total number of anchors
+        num_anchors_per_level = num_anchors_total // self.num_scale_levels
+        model_body = self._build_model_body()
 
         h, w = self.input_shape
         y_true = []
@@ -273,32 +281,39 @@ class YOLOv3:
 
     def load_model(self, filename_model_weights: Union[str, pl.Path]) -> Model:
         if self.model is None:
-            self.create_model()
+            self.model = self._build_model_body() # FIXME: check what kind of model it was
         # load weights
         self.model.load_weights(filename_model_weights)
         return self.model
 
-    def predict(self, image: Union[np.ndarray, Image.Image]):
+    def predict(self, image: Union[np.ndarray, Image.Image], th_score: float = 0.5):
         # image must be at the right size and scaled!
-        # TODO: Image input
-        if any(np.shape(image)[:2] != self.input_shape):
-            img = Image.fromarray(image).resize(self.input_shape)
-            image = np.asarray(img) / 255.0  # RESCALE
+        if isinstance(image, Image.Image):
+            image = np.asarray(image)
 
-        image_data = np.expand_dims(image, 0)  # Add batch dimension.
+        if np.shape(image)[:2] != self.input_shape:
+            image = Image.fromarray(image).resize(self.input_shape)
+            # image = np.asarray(img) / 255.0  # RESCALE
+        # Add batch dimension
+        image_data = np.expand_dims(image, 0)
 
         out_boxes, out_scores, out_classes = self._call_model(image_data)
         print(f"Found {len(out_boxes)} boxes.")
 
-        # TODO: visualize!
+        # apply threshold
+        lg = out_scores >= th_score
+        return out_boxes[lg], out_scores[lg], out_classes[lg]
 
-    def _call_model(self, image_tensor):
-        yolo_outputs = self.model(image_tensor)
+    def _call_model(self, image: np.array) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # #(1, 416, 416, 3)
+        yolo_outputs = self.model(np.asarray(image))
         out_boxes, out_scores, out_classes = yolo_eval(yolo_outputs,
                                                        self.anchors,
                                                        self.num_classes,
                                                        self.input_shape,
-                                                       max_boxes=self.max_boxes)
+                                                       max_boxes=self.max_boxes,
+                                                       score_threshold=0 # FIXME
+                                                       )
         # yolo_outputs,
         # anchors,
         # num_classes,
@@ -308,6 +323,7 @@ class YOLOv3:
         # iou_threshold = .5
 
         return out_boxes.numpy(), out_scores.numpy(), out_classes.numpy()
+
 
 def yolo_head(feats, anchors, num_classes: int, input_shape, calc_loss: bool = False):
     """Convert final layer features to bounding box parameters."""
@@ -630,11 +646,18 @@ def box_iou(b1, b2):
 
 
 if __name__ == "__main__":
-
-    model = YOLOv3(input_shape=(416, 416),
+    input_shape = (1024, 1024)
+    model = YOLOv3(input_shape=input_shape,
                    num_classes=2,
-                   anchors=None,
+                   anchors=[(256, 473), (414, 364), (414, 147), (256, 38), (97, 147), (97, 364),
+                            (694, 888), (877, 512), (694, 135), (329, 135), (146, 511), (329, 888)],
                    tiny_yolo=True
-                   ).create_model()
+                   )
+    model.load_model(pl.Path("../trained_models") / "2210301424_YOLOv3_rgb.h5")
 
+    for p2img in (pl.Path("../Data_ogl_TEST/withBox") / "Tst").glob("*.bmp"):
+        img = Image.open(p2img).convert("RGB")
+        boxes, scores, classes = model.predict(img, th_score=0)
 
+        img_out = draw_box(img.resize(input_shape), boxes, scores, classes)
+        img_out.show()
