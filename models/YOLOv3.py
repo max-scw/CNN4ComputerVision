@@ -5,11 +5,12 @@ YOLO_v3 model defined in Keras.
 import numpy as np
 import pathlib as pl
 from PIL import Image
+import json
 
 from functools import wraps, reduce
 from typing import Union, Tuple, List
 
-from utils.utils import draw_box
+from BoundingBoxRegression import draw_box
 
 import tensorflow as tf
 from keras import backend as K
@@ -31,6 +32,11 @@ from keras.regularizers import l2
 
 class YOLOv3:
     __color_channels = 3
+    __default_anchors_tiny_yolo = [(10, 14), (23, 27), (37, 58),
+                                   (81, 82), (135, 169), (344, 319)]
+    __default_anchors_yolo = [(10, 13), (16, 30), (33, 23),
+                              (30, 61), (62, 45), (59, 119),
+                              (116, 90), (156, 198), (373, 326)]
     model = None
 
     def __init__(
@@ -56,16 +62,24 @@ class YOLOv3:
             """
             if self.flag_tiny_yolo:
                 # tiny YOLOv3 has only 2 scale levels
-                anchors = [(10, 14), (23, 27), (37, 58),
-                           (81, 82), (135, 169), (344, 319)]
+                anchors = self.__default_anchors_tiny_yolo
             else:
                 # the standard YOLOv3 works at 3 scale levels
-                anchors = [(10, 13), (16, 30), (33, 23),
-                           (30, 61), (62, 45), (59, 119),
-                           (116, 90), (156, 198), (373, 326)]
+                anchors = self.__default_anchors_yolo
 
             # factors: [32, 16, 8]
         self.anchors = np.array(anchors).astype(float).reshape(-1, 2)
+
+    def __repr__(self):
+        info = f"YOLOv3({self.input_shape}, {self.num_classes}"
+        if self.max_boxes != 100:
+            info += f", max_boxes={self.max_boxes}"
+        if self.flag_tiny_yolo:
+            info += ", tiny_yolo=True"
+        if (self.flag_tiny_yolo and not np.array_equal(self.anchors, self.__default_anchors_tiny_yolo)) or \
+                (not self.flag_tiny_yolo and not np.array_equal(self.anchors, self.__default_anchors_yolo)):
+            info += f", anchors={self.anchors.tolist()}"
+        return info + ")"
 
     @property
     def model_name(self) -> str:
@@ -281,10 +295,33 @@ class YOLOv3:
 
     def load_model(self, filename_model_weights: Union[str, pl.Path]) -> Model:
         if self.model is None:
-            self.model = self._build_model_body() # FIXME: check what kind of model it was
-        # load weights
+            self.model = self._build_model_body()
+        # load weights to model
         self.model.load_weights(filename_model_weights)
         return self.model
+
+    def save_model(self, filename: Union[str, pl.Path]) -> Tuple[pl.Path, pl.Path]:
+        filename_weights = pl.Path(filename).with_suffix(".h5")
+        filename_info = pl.Path(filename).with_suffix(".json")
+        # save model weights to file
+        self.model.save_weights(filename_weights)
+        # save model input parameters / information to JSON file
+        input_parameters = {
+            "input_shape": self.input_shape,
+            "num_classes": self.num_classes,
+            "tiny_yolo": self.flag_tiny_yolo,
+            "max_boxes": self.max_boxes,
+            "anchors": self.anchors.tolist()
+        }
+        meta_data = {
+            "model_name": self.model_name,
+            "filename": filename.as_posix(),
+            "num_scale_levels": self.num_scale_levels,
+        }
+        # write to file
+        with open(filename_info, "w", encoding="utf-8") as json_file:
+            json.dump({"input_parameters": input_parameters, "meta_data": meta_data}, json_file)
+        return filename_weights, filename_info
 
     def predict(self, image: Union[np.ndarray, Image.Image], th_score: float = 0.5):
         # image must be at the right size and scaled!
@@ -298,13 +335,12 @@ class YOLOv3:
         image_data = np.expand_dims(image, 0)
 
         out_boxes, out_scores, out_classes = self._call_model(image_data)
-        print(f"Found {len(out_boxes)} boxes.")
-
         # apply threshold
         lg = out_scores >= th_score
+        print(f"{self.model_name} predicted {lg.sum()}/{len(out_boxes)} boxes with a probability >= {th_score}")
         return out_boxes[lg], out_scores[lg], out_classes[lg]
 
-    def _call_model(self, image: np.array) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _call_model(self, image: np.array, score_th: float = 0.) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         # #(1, 416, 416, 3)
         yolo_outputs = self.model(np.asarray(image))
         out_boxes, out_scores, out_classes = yolo_eval(yolo_outputs,
@@ -312,7 +348,7 @@ class YOLOv3:
                                                        self.num_classes,
                                                        self.input_shape,
                                                        max_boxes=self.max_boxes,
-                                                       score_threshold=0 # FIXME
+                                                       score_threshold=score_th
                                                        )
         # yolo_outputs,
         # anchors,
@@ -323,6 +359,20 @@ class YOLOv3:
         # iou_threshold = .5
 
         return out_boxes.numpy(), out_scores.numpy(), out_classes.numpy()
+
+
+def load_yolov3_model(filename: Union[str, pl.Path]) -> YOLOv3:
+    filename_weights = pl.Path(filename).with_suffix(".h5")
+    filename_info = pl.Path(filename).with_suffix(".json")
+    # load model information from JSON file
+    with open(filename_info, "r", encoding="utf-8") as json_file:
+        info = json.load(json_file)
+    input_parameters = info["input_parameters"]
+    # create YOLOv3 instance
+    model = YOLOv3(**input_parameters)
+    # load weights
+    model.load_model(filename_weights)
+    return model
 
 
 def yolo_head(feats, anchors, num_classes: int, input_shape, calc_loss: bool = False):
@@ -414,7 +464,6 @@ def make_last_layers(x, num_filters: int, out_filters):
     y = compose(DarknetConv2D_BN_Leaky(num_filters * 2, (3, 3)), DarknetConv2D(out_filters, (1, 1)))(x)
     return x, y
 
-
 def yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape):
     '''Get corrected boxes'''
     box_yx = box_xy[..., ::-1]
@@ -465,9 +514,12 @@ def yolo_eval(yolo_outputs,
     input_shape = K.shape(yolo_outputs[0])[1:3] * 32
     boxes = []
     box_scores = []
-    for l in range(num_layers):
-        _boxes, _box_scores = yolo_boxes_and_scores(yolo_outputs[l],
-            anchors[anchor_mask[l]], num_classes, input_shape, image_shape)
+    for i in range(num_layers):
+        _boxes, _box_scores = yolo_boxes_and_scores(yolo_outputs[i],
+                                                    anchors[anchor_mask[i]],
+                                                    num_classes,
+                                                    input_shape,
+                                                    image_shape)
         boxes.append(_boxes)
         box_scores.append(_box_scores)
     boxes = K.concatenate(boxes, axis=0)
@@ -646,18 +698,25 @@ def box_iou(b1, b2):
 
 
 if __name__ == "__main__":
-    input_shape = (1024, 1024)
-    model = YOLOv3(input_shape=input_shape,
+    model = load_yolov3_model(pl.Path("../trained_models") / "2210310931_YOLOv3tiny-416x416-6x2_rgb")
+
+    model = YOLOv3(input_shape=(1024, 1024),
                    num_classes=2,
                    anchors=[(256, 473), (414, 364), (414, 147), (256, 38), (97, 147), (97, 364),
                             (694, 888), (877, 512), (694, 135), (329, 135), (146, 511), (329, 888)],
                    tiny_yolo=True
+                   # anchors=[(128, 236), (207, 182), (207, 73), (128, 19), (48, 73), (48, 182),
+                   #          (318, 460), (435, 293), (373, 89), (193, 51), (76, 218), (138, 422),
+                   #          (746, 845), (871, 436), (636, 103), (277, 178), (152, 587), (387, 920)],
+                   # tiny_yolo=False
                    )
-    model.load_model(pl.Path("../trained_models") / "2210301424_YOLOv3_rgb.h5")
+    model.load_model(pl.Path("../trained_models") / "2210301424_YOLOv3_rgb.h5")  # tiny YOLO
+    # # model.load_model(pl.Path("../trained_models") / "2210310245_YOLOv3_rgb.h5")
 
-    for p2img in (pl.Path("../Data_ogl_TEST/withBox") / "Tst").glob("*.bmp"):
+    for p2img in (pl.Path("../Data_ogl/withBox") / "Tst").glob("*.bmp"):
         img = Image.open(p2img).convert("RGB")
-        boxes, scores, classes = model.predict(img, th_score=0)
+        boxes_prd, scores_prd, classes_prd = model.predict(img, th_score=0.1)
 
-        img_out = draw_box(img.resize(input_shape), boxes, scores, classes)
+        img_out = draw_box(img.resize(model.input_shape), boxes_prd, scores_prd, classes_prd, th_score=0.5)
         img_out.show()
+        break
