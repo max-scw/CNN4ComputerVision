@@ -170,8 +170,8 @@ def data_generator4yolo(path_to_images: pl.Path,
 
 if __name__ == "__main__":
     # # INPUT SHAPE MUST BE A MULTIPLE OF 32!
-    # input_shape = (1024, 1024)
-    #
+    input_shape = (640, 544)
+
     path_to_image_folders = pl.Path(r"Data_ogl_TEST/withBox")
     path_to_label = pl.Path(r"Data_ogl/project-1-at-2022-08-26-14-30-cb5e037c.json")
     # train = TrainModelsImageBBox(path_to_data=path_to_image_folders,
@@ -195,6 +195,7 @@ if __name__ == "__main__":
     #                              },
     #                              )
     # train.set_model(model_name="YOLOv3")
+    # train.fit()
     # # train.analyze(model_name="YOLOv3")
     # # print("done.")
 
@@ -210,7 +211,7 @@ if __name__ == "__main__":
                                                           path_to_annotation=path_to_label,
                                                           image_file_extension=".bmp",
                                                           batch_size=1,
-                                                          target_size=model.input_shape,
+                                                          target_size_wh=model.input_shape,
                                                           bbox_format="min_max",
                                                           shuffle=False,
                                                           augment_data=False
