@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import pathlib as pl
 import random
 import re
@@ -9,7 +9,10 @@ from typing import Union, Tuple, List
 
 import albumentations as A
 
-from utils import voith_colors
+import matplotlib.colors as mcolors
+
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import OneHotEncoder
 
 
 class BBoxTransform:
@@ -242,7 +245,7 @@ class BBoxTransform:
 def draw_single_bbox(image: Image.Image,
                      bbox,
                      bbox_format: str = "yolo",
-                     color=voith_colors.loc["voith_cyan", "RGB"]):
+                     color="1f77b4"):
     """Visualizes a single bounding box on the image"""
     xy_min_max = BBoxTransform().transform(bbox,
                                            format_to="coco",
@@ -256,7 +259,7 @@ def draw_single_bbox(image: Image.Image,
     return image
 
 
-def draw_bbox(image: Union[Image.Image, np.ndarray], bboxes, category_ids, bbox_format: str = "yolo"):
+def draw_bboxes(image: Union[Image.Image, np.ndarray], bboxes, category_ids, bbox_format: str = "yolo"):
     if isinstance(image, np.ndarray):
         image_copy = Image.fromarray(image)
     else:
@@ -269,8 +272,82 @@ def draw_bbox(image: Union[Image.Image, np.ndarray], bboxes, category_ids, bbox_
         image_copy = draw_single_bbox(image_copy,
                                       bbox,
                                       bbox_format=bbox_format,
-                                      color=voith_colors.iloc[category_id]["RGB"])
+                                      color=mcolors.TABLEAU_COLORS.values()[category_id])
     image_copy.show()
+
+
+def draw_box(image: Union[Image.Image, np.ndarray],
+             bbox: List[np.ndarray],
+             bbox_scores: np.ndarray,
+             bbox_classes: np.ndarray,
+             color_text: tuple[int, int, int] = (0, 0, 0),
+             class_id_to_label: list = None,
+             th_score: float = 0.5
+             ) -> Image.Image:
+    assert len(bbox) == len(bbox_scores) == len(bbox_classes)
+    # apply threshold to exclude uninteresting bounding boxes
+    lg = bbox_scores >= th_score
+    print(f"Found {lg.sum()} boxes with a score >= {th_score}.")
+    bbox = bbox[lg]
+    bbox_scores = bbox_scores[lg]
+    bbox_classes = bbox_classes[lg]
+
+    # create image drawing instance
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image)
+    img = image.copy().convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    # set font (size)
+    # (ImageDraw's default font is a bitmap font, and therefore it cannot be scaled. For scaling, you need to select a true-type font.)
+    font = ImageFont.truetype(font="utils/FiraMono-Medium.otf",
+                              size=np.floor(0.02 * image.size[1] + 0.5).astype("int32")
+                              )
+    line_thickness = np.sum(image.size) // 500
+
+    # set colors for classes
+    if class_id_to_label is None:
+        class_id_to_label = np.unique(np.asarray(bbox_classes).flatten()).tolist()
+
+    n_classes = len(class_id_to_label)
+    if n_classes < 10:
+        colors = list(mcolors.TABLEAU_COLORS.values())
+    else:
+        colors = list(mcolors.CSS4_COLORS.values())
+        random.shuffle(colors)
+
+    def _draw_box(box, score, class_prd):
+        # box coordinates
+        top, left, bottom, right = box
+        top = max(0, np.floor(top + 0.5).astype("int32"))
+        left = max(0, np.floor(left + 0.5).astype("int32"))
+        bottom = min(image.size[1], np.floor(bottom + 0.5).astype("int32"))
+        right = min(image.size[0], np.floor(right + 0.5).astype("int32"))
+
+        # label / info
+        info = f"{class_id_to_label[class_prd]} {score:.2f}"
+        # get size of the label flag
+        info_size = draw.textsize(info, font)
+
+        # coordinates for info label
+        if top - info_size[1] >= 0:
+            text_origin = np.array([left, top - info_size[1]])
+        else:
+            text_origin = np.array([left, top + 1])
+
+        color = colors[class_prd]
+        # draw box (workaround: thickness as multiple rectangles)
+        for j in range(line_thickness):
+            draw.rectangle((left + j, top + j, right - j, bottom - j), outline=color)
+        # draw.rectangle((left, top, right, bottom), outline=color)
+        # add label to box
+        draw.rectangle((tuple(text_origin), tuple(text_origin + info_size)), fill=color)
+        draw.text(tuple(text_origin), info, fill=color_text, font=font)
+
+    for box, score, class_prd in zip(bbox, bbox_scores, bbox_classes):
+        _draw_box(box, score, class_prd)
+
+    return img
 
 
 class ImageDataGenerator4BoundingBoxes:
@@ -574,7 +651,94 @@ class Annotator:
         return bboxes, category_ids
 
 
+def calc_iou_between_boxes(b1_min_max: Union[list, tuple, np.array], b2_min_max: Union[list, tuple, np.array]) -> np.array:
+    # [(x,y)_min, (x,y)_max]
+    # calculate width / height of a box
+    b1_min = np.asarray(b1_min_max)[..., :2]
+    b1_max = np.asarray(b1_min_max)[..., 2:4]
+    b1_wh = b1_max - b1_min
+
+    b2_min = np.asarray(b2_min_max)[..., :2]
+    b2_max = np.asarray(b2_min_max)[..., 2:4]
+    b2_wh = b2_max - b2_min
+    # calculate area
+    b1_area = b1_wh[..., 0] * b1_wh[..., 1]
+    b2_area = b2_wh[..., 0] * b2_wh[..., 1]
+
+    # determine area of intersection
+    intersect_min = np.maximum(b1_min, b2_min)
+    intersect_max = np.minimum(b1_max, b2_max)
+    intersect_wh = np.maximum(intersect_max - intersect_min, 0.0)
+    intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
+
+    # compare area of intersected boxes to the area of the original boxes => IOU = intersection over union
+    iou = intersect_area / (b1_area + b2_area - intersect_area)
+    return iou
+
+
+def determine_iou_and_label(boxes: Union[np.ndarray, list],
+                            boxes_prd: np.ndarray,
+                            labels: Union[np.ndarray, list],
+                            ) -> Tuple[np.array, np.array]:
+    # calculate intersection over union (IoU)
+    iou_bbx = []
+    label_bbx = []
+    for b_prd in boxes_prd:
+        # intersection over union to all true boxes
+        iou = [calc_iou_between_boxes(b_prd, b_true) for b_true in boxes]
+        # what is the best true box?
+        idx = np.argmax(iou)
+        # append to lists
+        iou_bbx.append(iou[idx])
+        label_bbx.append(labels[idx])
+    iou_bbx = np.asarray(iou_bbx)
+    label_bbx = np.asarray(label_bbx)
+    return iou_bbx, label_bbx
+
+
+def calc_mean_average_precision(labels: Union[np.ndarray, list],
+                                labels_prd: Union[np.ndarray, list],
+                                iou: Union[np.ndarray, list],
+                                threshold_iou: float = 0.5,
+                                num_classes: int = None
+                                ) -> float:
+    # metrics
+    # # mean intersection over union
+    # mean_iou = iou_bbx.mean()
+    # mean average precision @ X IoU
+    lg = np.asarray(iou) >= threshold_iou
+    # get predictions above the defined threshold and corresponding classes
+    predictions = np.asarray(labels_prd)[lg]
+    true_values = np.asarray(labels)[lg]
+
+    # encode to one-hot vectors for multiclass area-under-the-ROC-curve calculation
+    # (n_samples, n_classes)
+    labels_all = np.concatenate((true_values, predictions))
+    y_all = OneHotEncoder(max_categories=num_classes).fit_transform(labels_all.reshape(-1, 1)).toarray()
+    y_true = y_all[:len(true_values)]
+    y_prd = y_all[len(true_values):]
+    auc = roc_auc_score(y_true, y_prd)
+    return auc
+
+
 if __name__ == "__main__":
+    # path_to_data = pl.Path(r"Data_ogl\withBox\Trn")
+    # path_to_label = pl.Path(r"Data_ogl\project-1-at-2022-08-26-14-30-cb5e037c.json")
+    #
+    # # name_of_image = "220808_153403_0000000005_CAM1_NORMAL_NG.bmp"
+    # # image = Image.open(path_to_data.joinpath(name_of_image)).convert('RGB')
+    #
+    # bbgen = ImageDataGenerator4BoundingBoxes(path_to_data=path_to_data,
+    #                                          path_to_annotation=path_to_label,
+    #                                          image_file_extension="bmp",
+    #                                          batch_size=2,
+    #                                          image_size=(512, 512)
+    #                                          )
+    # for img, bbx, lbl in bbgen.iter_batchs():
+    #     # draw_bbox(image, bboxes, category_ids)
+    #     draw_bbox(Image.fromarray(img[0]).convert('RGB'), bbx[0], lbl[0])
+    #     break
+
     # https://albumentations.ai/docs/examples/example_bboxes/
     x_min = 50
     y_min = 100

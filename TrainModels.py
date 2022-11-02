@@ -14,10 +14,9 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, PiecewiseConstantDecay
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-from keras.models import Model, load_model
-from keras import backend as K
+from keras.models import Model
 
-from utils import StayAliveLoggingCallback, Log
+from utils.utils import StayAliveLoggingCallback, Log
 
 
 class TrainModels:
@@ -30,7 +29,7 @@ class TrainModels:
     _log_file_name = None
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
     _n_dense_layers_for_new_head = 1
-    _stay_alive_logging_step = 5
+    _stay_alive_logging_step = 1
     __early_stopping_after_n_epochs = 42
 
     n_classes = None
@@ -46,6 +45,7 @@ class TrainModels:
     model_pretrained = False
     model_finetune = False
     model = None
+    filename_saved_model = None
 
     def __init__(
             self,
@@ -72,7 +72,7 @@ class TrainModels:
         self.n_examples = {ky: self.get_n_files(ky) for ky in self.__split_names.keys()}
 
         # turn logging on
-        self._log = Log(file_name=log_file_name, print_message=self.verbose)
+        self._log = Log(filename=log_file_name, print_message=self.verbose)
 
     def set_path_to_data(
             self, path_to_data: Union[pl.Path, str], path_to_save_models: Union[pl.Path, str, None]
@@ -222,7 +222,7 @@ class TrainModels:
                                        cooldown=15,
                                        verbose=self.verbose
                                        ),
-                     StayAliveLoggingCallback(log_file_name=self._log_file_name,
+                     StayAliveLoggingCallback(log_file_name=self._log,
                                               epoch_step=self._stay_alive_logging_step,
                                               info=self.__get_model_name()
                                               )
@@ -239,20 +239,26 @@ class TrainModels:
                                           )]
         return callbacks
 
-    def _save_model(self) -> bool:
+    def _save_model(self, filename: Union[str, pl.Path]) -> bool:
+        """wrapper function to save the model. Substitute for different approach saving the model"""
+        self.model.save(filename)
+        return True
+
+    def save_model(self) -> bool:
         if "models" in self.paths and self.paths["models"]:
             # create file name
             date_str = datetime.now().strftime(format="%y%m%d%H%M")
-            file_name = f"{date_str}_{self.__get_model_name()}"
+            filename = f"{date_str}_{self.__get_model_name()}"
             # build file path
-            file_path = self.paths["models"].joinpath(file_name + ".h5")
+            self.filename_saved_model = pl.Path(filename).with_suffix(".h5")
+            file_path = self.paths["models"] / self.filename_saved_model
             # save model to file
-            self.model.save(file_path)
+            self._save_model(file_path)
             # log
             msg = f"Model {self.model_name} saved to {file_path}."
             self._log.log(msg, print_message=True)
             # save history to file
-            file_path = self.paths["models"].joinpath(file_name + ".csv")
+            file_path = self.paths["models"] / pl.Path(filename).with_suffix(".csv")
             self.training_history.to_csv(file_path, index=False)
         return True
 
@@ -265,7 +271,7 @@ class TrainModels:
         # train model
         self.fit()
         # save model
-        self._save_model()
+        self.save_model()
         return self.model
 
     def __get_model_name(self) -> str:
