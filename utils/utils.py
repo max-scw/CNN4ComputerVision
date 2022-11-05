@@ -5,10 +5,7 @@ import logging
 from datetime import datetime
 from keras.callbacks import Callback
 
-from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-import matplotlib.colors as mcolors
-from random import shuffle
 
 
 class Log:
@@ -56,3 +53,17 @@ class StayAliveLoggingCallback(Callback):
             self._log.log(msg)
 
 
+def determine_batch_size(n_examples: int, batch_size_max: int = 64) -> int:
+    batch_size_max = np.min([batch_size_max, np.max([n_examples // 5, 1])])
+
+    # find most suitable batch size
+    batch_size = -1
+    remainder = np.inf
+    for sz in range(batch_size_max, 0, -1):
+        tmp_remainder = n_examples % sz
+        if tmp_remainder < remainder:
+            remainder = tmp_remainder
+            batch_size = sz
+            if remainder == 0:
+                break
+    return batch_size

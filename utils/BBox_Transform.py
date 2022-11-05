@@ -17,7 +17,7 @@ from typing import Union, List, Tuple
 
 def swap_array_elements(ary):
     ary = np.asarray(ary)
-    sz = ary.shape[1] if len(ary.shape) > 1 else ary.shape[0]
+    sz = ary.shape[-1]
     idx = np.asarray(np.arange(1, sz+1) - [0, 2] * (sz//2), dtype=int)
     return ary[..., idx]
 

@@ -15,6 +15,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import OneHotEncoder
 
 from utils import BBox_Transform as trafo
+from utils.utils import determine_batch_size
 
 
 def draw_box(image: Union[Image.Image, np.ndarray],
@@ -41,7 +42,7 @@ def draw_box(image: Union[Image.Image, np.ndarray],
 
     # set font (size)
     # (ImageDraw's default font is a bitmap font, and therefore it cannot be scaled. For scaling, you need to select a true-type font.)
-    font = ImageFont.truetype(font=pl.Path("utils/FiraMono-Medium.otf").as_posix(),
+    font = ImageFont.truetype(font=pl.Path(__file__).with_name("FiraMono-Medium.otf").as_posix(),
                               size=np.floor(0.02 * image.size[1] + 0.5).astype("int32")
                               )
     line_thickness = np.sum(image.size) // 500
@@ -57,9 +58,8 @@ def draw_box(image: Union[Image.Image, np.ndarray],
         colors = list(mcolors.CSS4_COLORS.values())
         random.shuffle(colors)
 
-    def draw_one_box(box, score, class_prd):
+    def draw_one_box(box, color):
         # box coordinates
-        # top, left, bottom, right = box  # FIXME: delete, old
         # x_min = left
         # y_min = top
         # x_max = right
@@ -67,8 +67,16 @@ def draw_box(image: Union[Image.Image, np.ndarray],
         # x_min, y_min, x_max, y_max = box  # PIL
         left, top, right, bottom = box  # PIL
 
+        # draw box (workaround: thickness as multiple rectangles)
+        for j in range(line_thickness):
+            draw.rectangle((left + j, top + j, right - j, bottom - j), outline=color)
+
+    def draw_label_flag(box, score, class_prd, color):
+        # x_min, y_min, x_max, y_max = box  # PIL
+        left, top, right, bottom = box  # PIL
+
         # label / info
-        info = f"{class_id_to_label[class_prd]} {score:.2f}"
+        info = f"{class_id_to_label[class_prd]}: {score:.2f}"
         # get size of the label flag
         info_size = draw.textbbox((0, 0), info, font)[2:]
 
@@ -78,17 +86,17 @@ def draw_box(image: Union[Image.Image, np.ndarray],
         else:
             text_origin = np.array([left, top + 1])
 
-        color = colors[class_prd]
-        # draw box (workaround: thickness as multiple rectangles)
-        for j in range(line_thickness):
-            draw.rectangle((left + j, top + j, right - j, bottom - j), outline=color)
-
         # add label to box
         draw.rectangle((tuple(text_origin), tuple(text_origin + info_size)), fill=color)
         draw.text(tuple(text_origin), info, fill=color_text, font=font)
 
     for box, score, class_prd in zip(bbox, bbox_scores, bbox_classes):
-        draw_one_box(box, score, class_prd)
+        color = colors[class_prd]
+        draw_one_box(box, color)
+    # draw at foreground
+    for box, score, class_prd in zip(bbox, bbox_scores, bbox_classes):
+        color = colors[class_prd]
+        draw_label_flag(box, score, class_prd, color)
 
     return img
 
@@ -98,14 +106,12 @@ class ImageDataGenerator4BoundingBoxes:
     _image_file_extension = "jpg"
     _image_format = "RGB"
     __i_batch = 0
-    __random_seed = 0
 
     def __init__(
                 self,
                 path_to_data: Union[str, pl.Path] = None,
                 path_to_annotation: Union[str, pl.Path] = None,
                 shuffle: bool = False,
-                random_seed: int = 42,
                 target_image_size: Tuple[int, int] = (244, 244),
                 image_file_extension: str = "jpg",
                 batch_size: int = None,
@@ -126,14 +132,10 @@ class ImageDataGenerator4BoundingBoxes:
         self._image_file_extension = image_file_extension.strip("., \t\r\n")
         self.augment_data = augment_data
 
-        self.reset_seed(random_seed)
+        self.reset_seed()
         self._shuffle = shuffle
 
-    def reset_seed(self, seed: int = None) -> bool:
-        if seed:
-            self.__random_seed = seed
-        random.seed(self.__random_seed)
-
+    def reset_seed(self) -> bool:
         self.__set_transformation_pipeline()
         self.__i_batch = 0
         return True
@@ -157,12 +159,12 @@ class ImageDataGenerator4BoundingBoxes:
         trafo_fncs = []
         if self.augment_data:
             # --- noise
-            # trafo_fncs.append(A.GaussNoise(var_limit=(10, 50), p=0.2))
-            # if self.color_mode.lower() == "rgb":
-            #     trafo_fncs.append(A.ISONoise(p=0.5))  # camera sensor noise
-            # # --- filter
-            # trafo_fncs.append(A.Sharpen(p=0.2))
-            # trafo_fncs.append(A.Blur(blur_limit=2, p=0.2))
+            trafo_fncs.append(A.GaussNoise(var_limit=(10, 50), p=0.2))
+            if self.color_mode.lower() == "rgb":
+                trafo_fncs.append(A.ISONoise(p=0.5))  # camera sensor noise
+            # --- filter
+            trafo_fncs.append(A.Sharpen(p=0.2))
+            trafo_fncs.append(A.Blur(blur_limit=2, p=0.2))
             # # --- brightness / pixel-values
             # trafo_fncs.append(A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3))
             # A.RandomGamma(p=0.2),
@@ -171,14 +173,14 @@ class ImageDataGenerator4BoundingBoxes:
             # --- geometry
             # A.RandomSizedCrop((512 - 100, 512 + 100), 512, 512),
             # A.CenterCrop(width=450, height=450)
-            # trafo_fncs.append(A.HorizontalFlip(p=0.5))
-            trafo_fncs.append(A.VerticalFlip(p=0.5, always_apply=True))  # FIXME: for debugging
-            # trafo_fncs.append(A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.5))
-            # trafo_fncs.append(A.RandomRotate90(p=1))
-            # trafo_fncs.append(A.BBoxSafeRandomCrop(p=0.5, erosion_rate=0.01))
+            trafo_fncs.append(A.HorizontalFlip(p=0.5))
+            trafo_fncs.append(A.VerticalFlip(p=0.5), )
+            trafo_fncs.append(A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.5))
+            trafo_fncs.append(A.RandomRotate90(p=1))
+            trafo_fncs.append(A.BBoxSafeRandomCrop(p=0.5, erosion_rate=0.01))
         trafo_fncs.append(A.Resize(width=self._target_size_np[1], height=self._target_size_np[0], always_apply=True)),
-        # if self.augment_data:
-        #     trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
+        if self.augment_data:
+            trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
 
         # compose pipeline
         self.transform = A.Compose(trafo_fncs,
@@ -194,32 +196,16 @@ class ImageDataGenerator4BoundingBoxes:
     @property
     def batch_size(self):
         if self._batch_size is None:
-            self._batch_size = self._determine_batch_size(self.num_images)
+            self._batch_size = determine_batch_size(self.num_images)
         return self._batch_size
-
-    @staticmethod
-    def _determine_batch_size(n_examples: int, batch_size_max: int = 64) -> int:
-        batch_size_max = np.min([batch_size_max, np.max([n_examples // 3, 1])])
-
-        # find most suitable batch size
-        batch_size = -1
-        remainder = np.inf
-        for sz in range(batch_size_max, 0, -1):
-            tmp_remainder = n_examples % sz
-            if tmp_remainder < remainder:
-                remainder = tmp_remainder
-                batch_size = sz
-                if remainder == 0:
-                    break
-        return batch_size
 
     def iter_batchs(self, num_batches: int = None):
         batch_img, batch_bbx, batch_lbl = list(), list(), list()
-        for i, (img, bbx, lbl) in enumerate(self._iterimages()):
+        for i, (img, bbx, lbl) in enumerate(self.__iterimages()):
             batch_img.append(img)
             batch_bbx.append(bbx)
             batch_lbl.append(lbl)
-            if (i % self.batch_size) >= (self.batch_size - 1):  # FIXME
+            if (i % self.batch_size) >= (self.batch_size - 1):
                 batch_img = np.stack(batch_img, axis=0)
                 batch_bbx = np.stack(batch_bbx, axis=0)
                 batch_lbl = np.stack(batch_lbl, axis=0)
@@ -241,12 +227,12 @@ class ImageDataGenerator4BoundingBoxes:
             yield x
 
     def iter_images(self):
-        for i, x in enumerate(self._iterimages()):
+        for i, x in enumerate(self.__iterimages()):
             yield x
             if i >= self.num_images:
                 break
 
-    def _iterimages(self):
+    def __iterimages(self):
         list_of_images = self.images
         num_images = len(list_of_images)
 
@@ -265,17 +251,17 @@ class ImageDataGenerator4BoundingBoxes:
             # check if there is a bounding box
             if bboxes is None:
                 continue
-
-            print(f"bboxes={bboxes} | image.size={image.size} | self._target_size_pil={self._target_size_pil}")
-            draw_box(image, bboxes, np.ones((len(bboxes),)), category_ids).show()
+            # DEBUGGING
+            # print(f"bboxes={bboxes} | image.size={image.size} | self._target_size_pil={self._target_size_pil}")
+            # draw_box(image, bboxes, np.ones((len(bboxes),)), category_ids).show()
 
             # transform / augment image
-            transformed = self.transform(image=img_np,
+            transformed = self.transform(image=img_np,  # NOTE: numpy-style image but PIL style boxes
                                          bboxes=bboxes,
                                          category_ids=category_ids)
-            print(f"transformed['bboxes']={transformed['bboxes']} | transformed['image'].shape={transformed['image'].shape}")
-            # draw_box_simple(Image.fromarray(transformed["image"]), transformed["bboxes"][0]).show()
-            draw_box(transformed["image"], transformed["bboxes"], np.ones((len(transformed["bboxes"]),)), transformed["category_ids"]).show()
+            # # DEBUGGING
+            # print(f"transformed['bboxes']={transformed['bboxes']} | transformed['image'].shape={transformed['image'].shape}")
+            # draw_box(transformed["image"], transformed["bboxes"], np.ones((len(transformed["bboxes"]),)), transformed["category_ids"]).show()
 
             yield transformed["image"], transformed["bboxes"], transformed["category_ids"]
             # update loop control variable
@@ -284,8 +270,6 @@ class ImageDataGenerator4BoundingBoxes:
     def _find_label_to_image(self, image_name: str) -> Tuple[list, list]:
         bb = self.annotations.find_label_to_image(image_name)
         bboxes, category_ids = self.annotations.get_boundingboxes(bb)
-        # bboxes = [(50, 10, 400, 100)]  # FIXME: development
-        # category_ids = [0]  # FIXME: development
         return bboxes, category_ids
 
 
@@ -302,7 +286,7 @@ class Annotator:
 
         self._set_categories()
 
-    def __str__(self):
+    def __rpr__(self):
         return f"Annotator({self._path_to_annotation.as_posix()})"
 
     def get_n_boxes(self, names: List[str] = None) -> Tuple[int, int]:
@@ -347,7 +331,7 @@ class Annotator:
         category_ids = []
         for obj in labels:
             box = np.asarray([obj[ky] for ky in ["x", "y", "width", "height"]]) / 100  # normalized
-            image_size = (int(obj["original_width"]), int(obj["original_height"]))  # FIXME: correct size/shape??
+            image_size = (int(obj["original_width"]), int(obj["original_height"]))
 
             box_pascal_voc = trafo.scale_box(trafo.coco2pacal_voc(box), image_size)
             bboxes.append(box_pascal_voc)
@@ -431,12 +415,8 @@ def calc_mean_average_precision(labels: Union[np.ndarray, list],
 
 
 if __name__ == "__main__":
-    path_to_data = pl.Path(r"Data_ogl_TEST\withBox\Trn")
-    path_to_label = pl.Path(r"Data_ogl_TEST\project-1-at-2022-08-26-14-30-cb5e037c.json")
-
-    # img_test = Image.open(path_to_data.joinpath("TEST_IMAGE_42.bmp")).convert('RGB')
-    # img_out = draw_box(img_test, [[50, 10, 400, 100]], [1], [2], class_id_to_label=["wrong", "correct", "TEST"])
-    # img_out.show()
+    path_to_data = pl.Path(r"../Data_ogl_TEST/withBox/Tst")
+    path_to_label = pl.Path(r"../Data_ogl_TEST/project-1-at-2022-08-26-14-30-cb5e037c.json")
 
     bbgen = ImageDataGenerator4BoundingBoxes(path_to_data=path_to_data,
                                              path_to_annotation=path_to_label,
@@ -450,7 +430,7 @@ if __name__ == "__main__":
         img_out = draw_box(Image.fromarray(img).convert('RGB'), bbx, np.ones(shape=(len(bbx))), lbl,
                            class_id_to_label=bbgen.annotations.categories)
         img_out.show()
-        break
+        # break
 
     # https://albumentations.ai/docs/examples/example_bboxes/
 
