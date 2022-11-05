@@ -16,7 +16,7 @@ from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay, 
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras.models import Model
 
-from utils.utils import StayAliveLoggingCallback, Log
+from utils.utils import StayAliveLoggingCallback, Log, determine_batch_size
 
 
 class TrainModels:
@@ -24,22 +24,16 @@ class TrainModels:
     paths = None
     _path_to_data = None
 
-    _random_seed = None
-    _file_extension = "jpg"
     _log_file_name = None
     __split_names = {"training": "Trn", "validation": "Val", "test": "Tst"}
     _n_dense_layers_for_new_head = 1
     _stay_alive_logging_step = 1
     __early_stopping_after_n_epochs = 42
 
-    n_classes = None
     img_size = None
     color_mode = "rgb"
-    epochs = None
-    verbose = False
     training_history = None
     learning_rate = None
-    use_model_checkpoints = False
 
     model_name = None
     model_pretrained = False
@@ -63,6 +57,7 @@ class TrainModels:
         self.set_path_to_data(path_to_data, path_to_save_models)
         self.epochs = epochs
         self._random_seed = random_seed
+        self.reset_random_seed()
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
         self.use_model_checkpoints = use_model_checkpoints
@@ -111,24 +106,7 @@ class TrainModels:
     #     return gen
 
     def get_batch_size(self, key: str):
-        return self._determine_batch_size(self.get_n_files(key))
-
-    @staticmethod
-    def _determine_batch_size(n_examples: int, batch_size_max: int = 64) -> int:
-
-        batch_size_max = np.min([batch_size_max, np.max([n_examples // 3, 1])])
-
-        # find most suitable batch size
-        batch_size = -1
-        remainder = np.inf
-        for sz in range(batch_size_max, 0, -1):
-            tmp_remainder = n_examples % sz
-            if tmp_remainder < remainder:
-                remainder = tmp_remainder
-                batch_size = sz
-                if remainder == 0:
-                    break
-        return batch_size
+        return determine_batch_size(self.get_n_files(key))
 
     def get_n_files(self, key: str) -> int:
         """
@@ -136,11 +114,7 @@ class TrainModels:
         :param key:
         :return:
         """
-        n_files = 0
-        files = self.paths[key].glob("**/*" + self._file_extension)
-        for n_files, _ in enumerate(files):
-            pass
-        return n_files + 1
+        return len(list(self.paths[key].glob("*" + self._file_extension)))  # recursive pattern?
 
     def get_steps_per_epoch(self, key: str) -> int:
         return self.get_n_files(key) // self.get_batch_size(key)
@@ -174,9 +148,13 @@ class TrainModels:
     #         f"{datetime.now()}: learning_rate = {self.learning_rate if isinstance(self.learning_rate, float) else self.learning_rate.get_config()}"
     #     )
     #     return True
+    def reset_random_seed(self):
+        random.seed(self._random_seed)
 
     def fit(self):
-        # K.clear_session()
+        # set random seed | necessary for the nested function in the data generator which produces
+        self.reset_random_seed()
+
         self._compile_model()
         model = self._fit()
         # if finetuning is activated, a second training step is required
@@ -187,10 +165,8 @@ class TrainModels:
         return model
 
     def _fit(self):
-        # set random seed | necessary for the nested function in the data generator which produces
-        random.seed(self._random_seed)
         # start training
-        self._log.log(f"Start training {self.model_name} for {self.epochs} epochs ...")
+        self._log.log(f"Start training {self.model_name} with batch_size {self.get_batch_size('training')} for {self.epochs} epochs ...")
 
         # assert self.model.output.shape[1] == self.n_classes
 

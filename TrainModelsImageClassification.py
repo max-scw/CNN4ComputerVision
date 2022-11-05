@@ -80,7 +80,7 @@ class TrainModelsImageClassification(TrainModels):
                 "color_mode": self.color_mode,
                 # "class_mode": None if key[0].upper() == 'V' else "categorical",
                 "class_mode": "categorical",
-                "batch_size": self.determine_batch_size(key)
+                "batch_size": self.get_batch_size(key)
                 }
 
         def add_noise(img: np.ndarray) -> np.ndarray:
@@ -276,7 +276,7 @@ class TrainModelsImageClassification(TrainModels):
 
         gen = self.get_data_generator(key, shuffle=False)
         y_prd_softmax = model.predict(x=gen,
-                                      batch_size=self.determine_batch_size(key),
+                                      batch_size=self.get_batch_size(key),
                                       verbose=self.verbose
                                       )
 
