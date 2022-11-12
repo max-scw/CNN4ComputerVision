@@ -6,11 +6,12 @@ import numpy as np
 import pathlib as pl
 from PIL import Image
 import json
+from time import time
 
 from functools import wraps, reduce
 from typing import Union, Tuple, List
 
-from utils.BoundingBoxRegression import draw_box
+from utils.BoundingBoxRegression import draw_box_pil as draw_box
 from utils.BBox_Transform import swap_array_elements
 
 import tensorflow as tf
@@ -326,6 +327,7 @@ class YOLOv3:
         return filename_weights, filename_info
 
     def predict(self, image: Union[np.ndarray, Image.Image], th_score: float = 0.5):
+        t = time()
         # image must be at the right size and scaled!
         if isinstance(image, Image.Image):
             image = np.asarray(image)
@@ -339,11 +341,18 @@ class YOLOv3:
         out_boxes, out_scores, out_classes = self._call_model(image_data)
         # apply threshold
         lg = out_scores >= th_score
-        print(f"{self.model_name} predicted {lg.sum()}/{len(out_boxes)} boxes with a probability >= {th_score}")
-        return out_boxes[lg], out_scores[lg], out_classes[lg]
+
+        dt = time() - t
+        print(f"{self.model_name} predicted {lg.sum()}/{len(out_boxes)} boxes with a probability >= {th_score}"
+              f" | excecution time {dt} s.")
+        return swap_array_elements(out_boxes[lg]), out_scores[lg], out_classes[lg]
+
+    def call(self, *args):
+        return self.predict(*args)
+
 
     def _call_model(self, image: np.array, score_th: float = 0.) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # #(1, 416, 416, 3)
+        # #(1, 544, 640, 3)
         yolo_outputs = self.model(np.asarray(image))
         out_boxes, out_scores, out_classes = yolo_eval(yolo_outputs,
                                                        anchors=self.anchors,
@@ -515,6 +524,9 @@ def yolo_eval(yolo_outputs,
     num_layers = len(yolo_outputs)
     anchor_mask = np.arange(len(anchors)).reshape(num_layers, -1)[::-1].tolist()
     input_shape = K.shape(yolo_outputs[0])[1:3] * 32
+
+    image_shape_np = swap_array_elements(image_shape)
+
     boxes = []
     box_scores = []
     for i in range(num_layers):
@@ -522,7 +534,7 @@ def yolo_eval(yolo_outputs,
                                                     anchors[anchor_mask[i]],
                                                     num_classes,
                                                     input_shape,
-                                                    image_shape)
+                                                    image_shape_np)
         boxes.append(_boxes)
         box_scores.append(_box_scores)
     boxes = K.concatenate(boxes, axis=0)
