@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+import cv2 as cv
+
 import pathlib as pl
 import random
-
 from typing import Union, Tuple, List
 
 import albumentations as A  # expects numpy.ndarray (height, width, channels) as input: (y,x,c)!
@@ -16,17 +17,130 @@ from sklearn.preprocessing import OneHotEncoder
 
 from utils import BBox_Transform as trafo
 from utils.utils import determine_batch_size
+# import BBox_Transform as trafo
+# from utils import determine_batch_size
 
 
-def draw_box(image: Union[Image.Image, np.ndarray],
-             bbox: List[np.ndarray],
-             bbox_scores: np.ndarray,
-             bbox_classes: np.ndarray,
-             color_text: tuple[int, int, int] = (0, 0, 0),
-             class_id_to_label: list = None,
-             th_score: float = 0.5
-             ) -> Image.Image:
+def hex2rgb(color: Union[str, Tuple[int, int, int]]) -> Tuple[int, int, int]:
+    if isinstance(color, str):
+        # convert from hex to tuple
+        color_out = tuple(bytes.fromhex(color.strip("#")))
+    else:
+        color_out = color
+    return color_out
+
+
+def __draw_box_cv(image: np.ndarray, box, color_rgb: Union[Tuple[int, int, int], str] = (255, 0, 0), thickness: int = 1):
+    # from RGB to BRG as OpenCV requires
+    color_bgr = hex2rgb(color_rgb)[::-1]
+    # how to check if an image is RGB or BGR
+    if len(image.shape) < 3 or image.shape[2] < 3:
+        image = cv.cvtColor(image, cv.COLOR_GRAY2RGB)
+
+    # top, left, bottom, right = box
+    x_min, y_min, x_max, y_max = box  # PIL
+    start_point = tuple(np.asarray((x_min, y_min), dtype=int))
+    end_point = tuple(np.asarray((x_max, y_max), dtype=int))
+    return cv.rectangle(image, start_point, end_point, color=color_bgr, thickness=thickness)
+
+
+def __draw_label_flag(image: np.ndarray,
+                      box, info: str,
+                      color_font: Tuple[int, int, int],
+                      color_background: Tuple[int, int, int]) -> np.ndarray:
+    color_font_bgr = hex2rgb(color_font)[::-1]
+    color_background_bgr = hex2rgb(color_background)[::-1]
+    font_scale = 0.6
+
+    # x_min, y_min, x_max, y_max = box  # PIL
+    left, top, right, bottom = box  # PIL
+
+    # get size of the label flag
+    font = cv.FONT_HERSHEY_DUPLEX
+    text_size, baseline = cv.getTextSize(info, font, font_scale, 1)
+
+    # coordinates for info label
+    if top - text_size[1] >= 0:
+        start_point = (left, top)
+    else:
+        start_point = (left, top + text_size[1])
+
+    end_point = (start_point[0] + text_size[0], start_point[1] - text_size[1])
+
+    start_point = tuple(np.asarray(start_point, dtype=int))
+    end_point = tuple(np.asarray(end_point, dtype=int))
+    image = cv.rectangle(image, start_point, end_point, color=color_background_bgr, thickness=-1)
+
+    return cv.putText(image, info, start_point, font, font_scale, color_font_bgr)
+
+
+def draw_box_cv(image: Union[Image.Image, np.ndarray],
+                bbox: List[np.ndarray],
+                bbox_scores: np.ndarray,
+                bbox_classes: np.ndarray,
+                color_text: tuple[int, int, int] = (0, 0, 0),
+                class_id_to_label: list = None,
+                class_colors: list = None,
+                th_score: float = 0.5,
+                show: bool = False
+                ) -> np.ndarray:
+    # convert image if necessary
+    if isinstance(image, Image.Image):
+        image = np.array(image, dtype=np.uint8)
+
     assert len(bbox) == len(bbox_scores) == len(bbox_classes)
+    if len(bbox) < 1:
+        return image
+
+    # apply threshold to exclude uninteresting bounding boxes
+    lg = np.asarray(bbox_scores) >= th_score
+    print(f"Found {lg.sum()} boxes with a score >= {th_score}.")
+    bbox = np.asarray(bbox)[lg]
+    bbox_scores = np.asarray(bbox_scores)[lg]
+    bbox_classes = np.asarray(bbox_classes)[lg]
+
+    line_thickness = np.sum(image.shape[:2]) // 500
+
+    # set colors for classes
+    if class_id_to_label is None:
+        class_id_to_label = np.arange(np.max(bbox_classes) + 1).tolist()
+
+    n_classes = len(class_id_to_label)
+    if class_colors is None:
+        if n_classes < 10:
+            class_colors = list(mcolors.TABLEAU_COLORS.values())
+        else:
+            class_colors = list(mcolors.CSS4_COLORS.values())
+            random.shuffle(class_colors)
+
+    for box, score, class_prd in zip(bbox, bbox_scores, bbox_classes):
+        color = class_colors[class_prd]
+        image = __draw_box_cv(image, box, color, line_thickness)
+
+        # label / info
+        info = f"{class_id_to_label[class_prd]}: {score * 100:.0f}%"
+        image = __draw_label_flag(image, box, info, color_font=color_text, color_background=color)
+    if show:
+        window_name = "def draw_box_cv"
+        cv.namedWindow(window_name, cv.WINDOW_NORMAL)
+        cv.imshow(window_name, image)
+        cv.waitKey(10)
+
+    return image
+
+
+def draw_box_pil(image: Union[Image.Image, np.ndarray],
+                 bbox: List[np.ndarray],
+                 bbox_scores: np.ndarray,
+                 bbox_classes: np.ndarray,
+                 color_text: tuple[int, int, int] = (0, 0, 0),
+                 class_id_to_label: list = None,
+                 th_score: float = 0.5
+                 ) -> Image.Image:
+    assert len(bbox) == len(bbox_scores) == len(bbox_classes)
+    if len(bbox) < 1:
+        return image
+
     # apply threshold to exclude uninteresting bounding boxes
     lg = np.asarray(bbox_scores) >= th_score
     print(f"Found {lg.sum()} boxes with a score >= {th_score}.")
@@ -159,28 +273,32 @@ class ImageDataGenerator4BoundingBoxes:
         trafo_fncs = []
         if self.augment_data:
             # --- noise
-            trafo_fncs.append(A.GaussNoise(var_limit=(10, 50), p=0.2))
+            trafo_fncs.append(A.GaussNoise(var_limit=(10, 50), p=0.5))
             if self.color_mode.lower() == "rgb":
                 trafo_fncs.append(A.ISONoise(p=0.5))  # camera sensor noise
             # --- filter
-            trafo_fncs.append(A.Sharpen(p=0.2))
-            trafo_fncs.append(A.Blur(blur_limit=2, p=0.2))
-            # # --- brightness / pixel-values
-            # trafo_fncs.append(A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3))
-            # A.RandomGamma(p=0.2),
+            trafo_fncs.append(A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.5))
+            trafo_fncs.append(A.Blur(blur_limit=5, p=0.5))
+            # --- brightness / pixel-values
+            trafo_fncs.append(A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.8))
+            trafo_fncs.append(A.RandomGamma(gamma_limit=(80, 120), p=0.2)),
+            trafo_fncs.append(A.RandomToneCurve(scale=0.1, p=0.2))
             # A.CLAHE(p=0.2),  # Contrast Limited Adaptive Histogram Equalization
             # A.RGBShift(p=0.1),
             # --- geometry
             # A.RandomSizedCrop((512 - 100, 512 + 100), 512, 512),
             # A.CenterCrop(width=450, height=450)
             trafo_fncs.append(A.HorizontalFlip(p=0.5))
-            trafo_fncs.append(A.VerticalFlip(p=0.5), )
-            trafo_fncs.append(A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.5))
-            trafo_fncs.append(A.RandomRotate90(p=1))
-            trafo_fncs.append(A.BBoxSafeRandomCrop(p=0.5, erosion_rate=0.01))
+            trafo_fncs.append(A.VerticalFlip(p=0.5))
+            trafo_fncs.append(A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=45, p=0.5))
+            trafo_fncs.append(A.RandomRotate90(p=0.5))
+            trafo_fncs.append(A.BBoxSafeRandomCrop(erosion_rate=0.01, p=0.5))
+            # --- compression
+            trafo_fncs.append(A.ImageCompression(quality_lower=95, quality_upper=100,
+                                                 compression_type=A.ImageCompression.ImageCompressionType.JPEG, p=0.5))
         trafo_fncs.append(A.Resize(width=self._target_size_np[1], height=self._target_size_np[0], always_apply=True)),
         if self.augment_data:
-            trafo_fncs.append(A.PixelDropout(dropout_prob=0.01, p=0.5))
+            trafo_fncs.append(A.PixelDropout(dropout_prob=0.05, p=0.5))
 
         # compose pipeline
         self.transform = A.Compose(trafo_fncs,
@@ -206,6 +324,7 @@ class ImageDataGenerator4BoundingBoxes:
             batch_bbx.append(bbx)
             batch_lbl.append(lbl)
             if (i % self.batch_size) >= (self.batch_size - 1):
+                # TODO: add padding here!
                 batch_img = np.stack(batch_img, axis=0)
                 batch_bbx = np.stack(batch_bbx, axis=0)
                 batch_lbl = np.stack(batch_lbl, axis=0)
@@ -422,7 +541,7 @@ if __name__ == "__main__":
                                              path_to_annotation=path_to_label,
                                              image_file_extension="bmp",
                                              batch_size=1,
-                                             target_image_size=(1000, 500),
+                                             target_image_size=(640, 544),
                                              augment_data=True,
                                              )
     for img, bbx, lbl in bbgen.iter_images():
