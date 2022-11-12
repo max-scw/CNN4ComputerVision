@@ -1,6 +1,9 @@
+import time
+
 from TrainModels import TrainModels
-from models.yolov3 import YOLOv3, preprocess_true_boxes
+from models.yolov3 import YOLOv3, preprocess_true_boxes, load_yolov3_model
 from utils.BoundingBoxRegression import ImageDataGenerator4BoundingBoxes, Annotator
+from utils.BoundingBoxRegression import draw_box_pil, draw_box_cv
 from utils.BBox_Transform import swap_array_elements
 
 from keras.optimizers import Adam
@@ -10,7 +13,6 @@ from typing import Union, Tuple
 
 import numpy as np
 import pathlib as pl
-import random
 
 
 class TrainModelsImageBBox(TrainModels):
@@ -29,7 +31,8 @@ class TrainModelsImageBBox(TrainModels):
                  use_model_checkpoints: bool = False,
                  max_boxes: int = None,
                  kargs=None,
-                 augment_data: bool = True
+                 augment_data: bool = True,
+                 batch_size: int = None
                  ) -> None:
         super().__init__(path_to_data=path_to_data,
                          epochs=epochs,
@@ -38,7 +41,8 @@ class TrainModelsImageBBox(TrainModels):
                          verbose=verbose,
                          file_extension=file_extension,
                          log_file_name=log_file_name,
-                         use_model_checkpoints=use_model_checkpoints
+                         use_model_checkpoints=use_model_checkpoints,
+                         batch_size=batch_size
                          )
         self._loss = None
         self.max_boxes = max_boxes
@@ -59,6 +63,8 @@ class TrainModelsImageBBox(TrainModels):
         return True
 
     def get_data_generator(self, key: str, shuffle: bool = True):
+        is_training = key == "training"
+        is_test = key == "test"
         # NOTE: wrapper is currently specific for YOLO!s
         # print(f"get_data_generator: target_size={self.target_size}")  # FIXME: for DEBUGGING
         gen = data_generator4yolo(path_to_images=self.paths[key],
@@ -70,8 +76,8 @@ class TrainModelsImageBBox(TrainModels):
                                   max_boxes=self.max_boxes,
                                   num_scale_level=2 if self.__get_from_kargs("tiny_yolo") else 3,
                                   image_file_extension=self._file_extension,
-                                  shuffle=shuffle,
-                                  augment_data=self._augment_data
+                                  shuffle=shuffle if is_training else False,
+                                  augment_data=False if is_test else self._augment_data
                                   )
         return gen
 
@@ -198,12 +204,13 @@ def data_generator4yolo(path_to_images: pl.Path,
 
 
 if __name__ == "__main__":
-    # INPUT SHAPE MUST BE A MULTIPLE OF 32!
-    input_shape_pil = (1024, 128)
-    # random.seed(42)
-
-    path_to_image_folders = pl.Path(r"Data_ogl_TEST/withBox")
+    path_to_image_folders = pl.Path(r"Data_ogl/withBox")
     path_to_label = pl.Path(r"Data_ogl/project-1-at-2022-08-26-14-30-cb5e037c.json")
+    path_to_label = pl.Path(r"Data_ogl/project-1-at-2022-11-11-18-36-e5bee4cc.json")
+
+    # INPUT SHAPE MUST BE A MULTIPLE OF 32!
+    input_shape_pil = (640, 544)
+
     train = TrainModelsImageBBox(path_to_data=path_to_image_folders,
                                  file_extension=".bmp",
                                  path_to_annotation=path_to_label,
@@ -214,7 +221,7 @@ if __name__ == "__main__":
                                  random_seed=42,
                                  verbose=True,
                                  kargs={
-                                     "anchors": [[1014, 124], [1014, 124]],
+                                     # "anchors": [[1014, 124], [1014, 124]],
                                      # "anchors": [[160, 272], [258, 204], [258,  68], [160,   0], [61,  67], [61, 204],
                                      #             [434, 507], [548, 272], [434,  36], [205,  36], [91, 271], [205, 507]],
                                      # "anchors": [(128, 236), (207, 182), (207, 73), (128, 19), (48, 73), (48, 182),
@@ -230,50 +237,56 @@ if __name__ == "__main__":
                                  )
     train.set_model(model_name="YOLOv3")
     train.get_data_generator("training")
-    # for i, (yolo_output, tmp) in enumerate(train.get_data_generator("training")):
-    #     print(i)
+
     train.fit()
-    # # train.analyze(model_name="YOLOv3")
-    # # print("done.")
+    # # # train.analyze(model_name="YOLOv3")
+    # # # print("done.")
 
 
     # # TEST MODEL
-    # model = load_yolov3_model(pl.Path("trained_models") / "2210311301_YOLOv3tiny-1024x1024-12x2_rgb")
+    # # model = load_yolov3_model(pl.Path("trained_models") / "2210311301_YOLOv3tiny-1024x1024-12x2_rgb")
+    # model = load_yolov3_model(pl.Path("trained_models") / "2211052053_YOLOv3tiny-640x544-12x2_rgb")
+    # # model = load_yolov3_model(pl.Path("trained_models") / "2210312306_YOLOv3tiny-512x512-12x2_rgb")
+    # model = load_yolov3_model(pl.Path("trained_models") / "2211081144_YOLOv3tiny-608x512-6x2_rgb")
+    #
     # th_iou = 0.3  # usually > 0.5
-    # th_score = 0.7
+    # th_score = 0.6
     #
     # gen = ImageDataGenerator4BoundingBoxes(path_to_data=path_to_image_folders / "Tst",
-    #                                                       path_to_annotation=path_to_label,
-    #                                                       image_file_extension=".bmp",
-    #                                                       batch_size=1,
-    #                                                       target_image_size=model.input_shape,
-    #                                                       shuffle=True,
-    #                                                       augment_data=True
-    #                                                       )
+    #                                        path_to_annotation=path_to_label,
+    #                                        image_file_extension=".bmp",
+    #                                        batch_size=1,
+    #                                        target_image_size=model.input_shape,
+    #                                        shuffle=True,
+    #                                        augment_data=True
+    #                                        )
     #
     # iou_boxes = []
     # true_labels_per_box = []
     # predicted_labels_per_box = []
     # auc_list = []
     # for img, bbx, lbl in gen.iter_images():
+    #     assert (np.asarray(swap_array_elements(img.shape[:2])) == model.input_shape).all()
     #     # draw original bounding boxes
-    #     draw_box(img, bbx, np.full((len(bbx)), 99), lbl, class_id_to_label=gen.annotations.categories).show()
+    #     # draw_box(img, bbx, np.full((len(bbx)), 999), lbl, class_id_to_label=gen.annotations.categories).show()
     #
     #     boxes_prd, scores_prd, classes_prd = model.predict(img, th_score=th_score)
     #
     #     # draw predicted bounding boxes
-    #     draw_box(img, boxes_prd, scores_prd, classes_prd,
-    #              class_id_to_label=gen.annotations.categories, th_score=th_score).show()
     #
-    #     iou_bbx, label_bbx = determine_iou_and_label(bbx, boxes_prd, lbl)
-    #
-    #     iou_boxes += list(iou_bbx)
-    #     true_labels_per_box += list(label_bbx)
-    #     predicted_labels_per_box += list(classes_prd)
-    #     # calculate AUC-score for particular image
-    #     auc_list.append(calc_mean_average_precision(label_bbx, classes_prd, iou_bbx, threshold_iou=th_iou))
-    #
-    # auc = calc_mean_average_precision(true_labels_per_box, predicted_labels_per_box, iou_boxes, threshold_iou=th_iou)
-    # print(f"Mean average precision (mAP) @ IoU={th_iou}: {np.mean(auc_list)}, AUC@IoU={th_iou}: {auc}")
+    #     # draw_box_pil(img, boxes_prd, scores_prd, classes_prd, class_id_to_label=gen.annotations.categories, th_score=th_score).show()
+    #     draw_box_cv(img, boxes_prd, scores_prd, classes_prd, class_id_to_label=gen.annotations.categories, th_score=th_score, show=True)
+    #     time.sleep(5)
+    #     # break
+    # #     iou_bbx, label_bbx = determine_iou_and_label(bbx, boxes_prd, lbl)
+    # #
+    # #     iou_boxes += list(iou_bbx)
+    # #     true_labels_per_box += list(label_bbx)
+    # #     predicted_labels_per_box += list(classes_prd)
+    # #     # calculate AUC-score for particular image
+    # #     auc_list.append(calc_mean_average_precision(label_bbx, classes_prd, iou_bbx, threshold_iou=th_iou))
+    # #
+    # # auc = calc_mean_average_precision(true_labels_per_box, predicted_labels_per_box, iou_boxes, threshold_iou=th_iou)
+    # # print(f"Mean average precision (mAP) @ IoU={th_iou}: {np.mean(auc_list)}, AUC@IoU={th_iou}: {auc}")
 
 

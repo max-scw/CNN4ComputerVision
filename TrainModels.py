@@ -51,7 +51,8 @@ class TrainModels:
             file_extension: str = "jpg",
             log_file_name: str = None,
             use_model_checkpoints: bool = False,
-            n_classes: int = None
+            n_classes: int = None,
+            batch_size: int = None
     ) -> None:
         # set local variables
         self.set_path_to_data(path_to_data, path_to_save_models)
@@ -61,6 +62,7 @@ class TrainModels:
         self.verbose = verbose
         self._file_extension = "." + file_extension.replace(".", "")
         self.use_model_checkpoints = use_model_checkpoints
+        self._batch_size = batch_size
 
         # set classes
         self.n_classes = n_classes
@@ -106,7 +108,10 @@ class TrainModels:
     #     return gen
 
     def get_batch_size(self, key: str):
-        return determine_batch_size(self.get_n_files(key))
+        if key == "training" and self._batch_size:
+            return self._batch_size
+        else:
+            return determine_batch_size(self.get_n_files(key))
 
     def get_n_files(self, key: str) -> int:
         """
